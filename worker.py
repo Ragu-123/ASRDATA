@@ -19,10 +19,11 @@ def strip_ansi(s: str) -> str:
 class IngestionWorker:
     """
     High-performance ingestion engine:
-    - Dedicated daemon heartbeat thread (never misses heartbeats).
-    - Concurrent stream downloader (3 parallel streams per node for 4 vCPUs).
-    - Centralized coordinator leasing (zero YouTube channel re-scraping overhead).
-    - Clean numeric telemetry with per-node processed counters.
+    - Dedicated daemon heartbeat thread (runs every 6s).
+    - Concurrent stream downloader (2 parallel streams per node for clean non-throttled bandwidth).
+    - YouTube player_client=['android', 'ios'] to completely eliminate 403 Forbidden errors.
+    - Centralized coordinator leasing (sub-second, shared bucket catalog).
+    - Accurate per-node session progress tracking.
     """
     def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = ""):
         self.coordinator = coordinator
@@ -95,7 +96,7 @@ class IngestionWorker:
             return
         self.running = True
 
-        # 1. Independent Dedicated Heartbeat Daemon (Runs non-stop every 8s)
+        # 1. Dedicated Heartbeat Daemon (Runs non-stop every 6s)
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_daemon, daemon=True)
         self.heartbeat_thread.start()
 
@@ -104,7 +105,7 @@ class IngestionWorker:
         self.worker_thread.start()
 
     def _heartbeat_daemon(self):
-        """Dedicated daemon thread sending heartbeats every 8 seconds regardless of download state."""
+        """Dedicated daemon thread sending heartbeats every 6 seconds."""
         print(f"[HEARTBEAT] Daemon started for {config.NODE_ID}")
         while self.running:
             try:
@@ -166,11 +167,11 @@ class IngestionWorker:
                 time.sleep(2)
                 continue
 
-            # 2. Atomically lease next batch from coordinator (sub-second, cached catalog)
+            # 2. Atomically lease next batch from coordinator (sub-second, shared catalog)
             batch = self.coordinator.lease_next_batch(batch_size=config.BATCH_LEASE_SIZE)
             if not batch:
                 self.batch_info = "Waiting for videos / peer leases"
-                time.sleep(8)
+                time.sleep(6)
                 continue
 
             print(f"\n[WORKER {config.NODE_ID}] Successfully leased batch of {len(batch)} videos!")
@@ -228,13 +229,18 @@ class IngestionWorker:
                             self.download_speed = speed_clean
 
             ydl_opts = {
-                'format': 'ba[ext=opus]/ba[ext=m4a]/ba',
+                'format': 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best',
                 'outtmpl': str(config.STAGING_DIR / f"{vid_id}.%(ext)s"),
                 'quiet': True,
                 'no_warnings': True,
-                'concurrent_fragment_downloads': 4,
-                'http_chunk_size': config.HTTP_CHUNK_SIZE,
-                'ignoreerrors': True,
+                'socket_timeout': 30,
+                'retries': 5,
+                'fragment_retries': 5,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'ios']
+                    }
+                },
                 'progress_hooks': [ydl_hook]
             }
 
@@ -256,11 +262,24 @@ class IngestionWorker:
                         return None
 
                     dur = info.get("duration") or item.get("duration", 0)
-                    ext = info.get("ext", "m4a")
-                    filename = f"{vid_id}.{ext}"
-                    filepath = config.STAGING_DIR / filename
-                    size_mb = filepath.stat().st_size / (1024**2) if filepath.exists() else 0
+
+                    # Look for actual downloaded file on disk
+                    matching = list(config.STAGING_DIR.glob(f"{vid_id}.*"))
+                    if matching:
+                        filepath = matching[0]
+                        filename = filepath.name
+                        size_mb = filepath.stat().st_size / (1024**2)
+                    else:
+                        ext = info.get("ext", "m4a")
+                        filename = f"{vid_id}.{ext}"
+                        filepath = config.STAGING_DIR / filename
+                        size_mb = filepath.stat().st_size / (1024**2) if filepath.exists() else 0.0
+
                     elapsed = time.time() - t0
+
+                    if size_mb < 0.02:
+                        print(f"[WORKER] Warning: {vid_id} yielded empty file ({size_mb} MB). Skipping.")
+                        return None
 
                     return {
                         "id": vid_id,
@@ -278,7 +297,7 @@ class IngestionWorker:
                     if vid_id in self.active_videos:
                         del self.active_videos[vid_id]
 
-        # Execute concurrently across threads (3 streams per node)
+        # Execute concurrently across threads (2 streams per node)
         with ThreadPoolExecutor(max_workers=config.CONCURRENT_DOWNLOADS_PER_NODE) as executor:
             future_to_item = {executor.submit(download_single, it): it for it in batch}
             for future in as_completed(future_to_item):
@@ -289,7 +308,7 @@ class IngestionWorker:
                 completed_in_batch += 1
                 self.batch_info = f"Video {completed_in_batch}/{total_in_batch}"
 
-                if res:
+                if res and res.get("size_mb", 0) > 0.02:
                     vid_id = res["id"]
                     dur = res["duration_seconds"]
                     self.session_count += 1

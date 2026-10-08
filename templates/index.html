@@ -423,15 +423,15 @@
         const workers = await res.json();
         const grid = document.getElementById("workers-grid");
         
-        const liveWorkers = workers.filter(w => w.is_alive !== false);
+        const liveWorkers = (workers || []).filter(w => w.is_alive !== false && w.status !== 'offline');
         document.getElementById("active-nodes-badge").textContent = `${liveWorkers.length} Active Node${liveWorkers.length === 1 ? '' : 's'}`;
 
-        if (!workers || workers.length === 0) {
+        if (!liveWorkers || liveWorkers.length === 0) {
           grid.innerHTML = `<div class="col-span-full p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">No other peer nodes detected. Start another Kaggle 'Save Version' job to automatically scale!</div>`;
           return;
         }
 
-        grid.innerHTML = workers.map(w => {
+        grid.innerHTML = liveWorkers.map(w => {
           const isThis = w.worker_id === currentWorkerId;
           const diskUsed = w.disk ? w.disk.used_gb : 0;
           const isAlive = w.is_alive !== false;
