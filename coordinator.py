@@ -6,12 +6,14 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from huggingface_hub import HfApi
+import yt_dlp
 import config
 
 class ClusterCoordinator:
     """
     Decentralized task coordinator using Hugging Face Storage Bucket.
-    Manages atomic batch leases, active worker heartbeats, and channel queues.
+    Manages atomic batch leases, active worker heartbeats, centralized channel catalogs,
+    and cluster-wide telemetry synchronization.
     """
     def __init__(self, api: HfApi, bucket_id: str, node_id: str):
         self.api = api
@@ -19,6 +21,7 @@ class ClusterCoordinator:
         self.node_id = node_id
         self.manifest_cache = {"completed": {}, "total_hours": 0.0, "last_updated": ""}
         self.channels_cache = []
+        self.catalog_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._ensure_bucket_ready()
 
@@ -135,17 +138,113 @@ class ClusterCoordinator:
         self.save_channels(channels)
         return True
 
-    # --- BATCH LEASING ENGINE ---
-    def lease_batch(self, candidate_videos: List[Dict[str, Any]], batch_size: int = config.BATCH_LEASE_SIZE) -> List[Dict[str, Any]]:
+    # --- CENTRALIZED METADATA CATALOG ---
+    def get_channel_catalog(self, channel: Dict[str, Any], needed_uncompleted: int = 120) -> List[Dict[str, Any]]:
         """
-        Atomically lease a batch of videos for this node.
-        Skips completed videos and videos leased by other active workers.
+        Retrieves or expands the channel's video catalog.
+        - First loads from the bucket (sub-second, shared across all nodes).
+        - If uncompleted candidates < needed_uncompleted, fetches the next metadata slice via yt-dlp
+          and saves back to bucket so peer nodes don't repeat the extraction.
+        """
+        ch_id = channel["id"]
+        ch_url = channel["url"]
+        catalog_path = f"catalogs/{ch_id}.json"
+
+        # 1. Check local cache or fetch from bucket
+        catalog = self.catalog_cache.get(ch_id, [])
+        if not catalog:
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                t_path = Path(tmp.name)
+            try:
+                tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+                paths = {it.path for it in tree}
+                if catalog_path in paths:
+                    self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(catalog_path, t_path)])
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        catalog = json.load(f)
+                    self.catalog_cache[ch_id] = catalog
+            except Exception as e:
+                print(f"[COORDINATOR] Catalog fetch notice for {ch_id}: {e}")
+            finally:
+                if t_path.exists():
+                    t_path.unlink()
+
+        # 2. Count uncompleted videos currently in catalog
+        completed_ids = set(self.manifest_cache.get("completed", {}).keys())
+        uncompleted = [v for v in catalog if v.get("id") not in completed_ids]
+
+        # 3. If uncompleted count is lower than needed, expand metadata via yt-dlp slice
+        if len(uncompleted) < needed_uncompleted:
+            start_idx = len(catalog) + 1
+            chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 2)
+            end_idx = len(catalog) + chunk_size
+            print(f"[COORDINATOR] Expanding catalog for {channel.get('name', ch_id)}: fetching items {start_idx} to {end_idx}...")
+
+            try:
+                ydl_opts = {
+                    'extract_flat': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'playliststart': start_idx,
+                    'playlistend': end_idx
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(ch_url, download=False)
+                    entries = info.get("entries", []) if info else []
+
+                existing_ids = {v["id"] for v in catalog}
+                added_count = 0
+                for e in entries:
+                    v_id = e.get("id")
+                    if v_id and v_id not in existing_ids:
+                        catalog.append({
+                            "id": v_id,
+                            "title": e.get("title", ""),
+                            "duration": e.get("duration", 0),
+                            "channel": channel.get("name", ch_id)
+                        })
+                        existing_ids.add(v_id)
+                        added_count += 1
+
+                print(f"[COORDINATOR] Discovered {added_count} new videos for {ch_id} (Total catalog: {len(catalog)})")
+
+                # Upload expanded catalog to bucket so all peer nodes immediately get it
+                if added_count > 0:
+                    self.catalog_cache[ch_id] = catalog
+                    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                        json.dump(catalog, tmp, indent=2)
+                        t_path = Path(tmp.name)
+                    try:
+                        self.api.batch_bucket_files(bucket_id=self.bucket_id, add=[(t_path, catalog_path)])
+                    except Exception as e:
+                        print(f"[COORDINATOR] Warning saving catalog to bucket: {e}")
+                    finally:
+                        if t_path.exists():
+                            t_path.unlink()
+
+            except Exception as e:
+                print(f"[COORDINATOR] Warning expanding channel {ch_url}: {e}")
+
+        return catalog
+
+    # --- DYNAMIC BATCH LEASING ENGINE ---
+    def lease_next_batch(self, batch_size: int = config.BATCH_LEASE_SIZE) -> List[Dict[str, Any]]:
+        """
+        Dynamically calculates active node count, expands metadata buffer if needed,
+        and atomically leases a non-overlapping batch for this node.
         """
         now = time.time()
         self.load_manifest()
         completed_ids = set(self.manifest_cache.get("completed", {}).keys())
-        
+
+        # Determine active nodes count to scale metadata fetch buffer
+        active_nodes = self.list_active_workers()
+        live_node_count = max(1, len([w for w in active_nodes if w.get("is_alive", True)]))
+        needed_buffer = live_node_count * batch_size * 2
+
+        # 1. Read existing active leases from peer nodes & clean up expired leases
         leased_ids = set()
+        expired_files_to_delete = []
         try:
             tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
             lease_files = [it.path for it in tree if it.path.startswith("batches/") and it.path.endswith("_lease.json")]
@@ -158,29 +257,49 @@ class ClusterCoordinator:
                     self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(l_path, t_path)])
                     with open(t_path, "r", encoding="utf-8") as f:
                         lease_data = json.load(f)
+                    
                     if lease_data.get("expires_at", 0) > now:
                         leased_ids.update(lease_data.get("video_ids", []))
+                    else:
+                        # Lease has expired -> mark for auto-cleanup so videos aren't locked
+                        expired_files_to_delete.append(l_path)
                 except Exception:
                     pass
                 finally:
                     if t_path.exists():
                         t_path.unlink()
+
+            # Clean expired lease files in bucket
+            if expired_files_to_delete:
+                try:
+                    self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=expired_files_to_delete)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[COORDINATOR] Warning inspecting leases: {e}")
 
-        # Pick videos not completed and not leased
+        # 2. Iterate channels to lease uncompleted, unleased videos
+        channels = self.load_channels()
         selected = []
-        for vid in candidate_videos:
-            v_id = vid["id"]
-            if v_id not in completed_ids and v_id not in leased_ids:
-                selected.append(vid)
-                if len(selected) >= batch_size:
-                    break
+
+        for ch in channels:
+            if not ch.get("active", True):
+                continue
+            catalog = self.get_channel_catalog(ch, needed_uncompleted=needed_buffer)
+            for vid in catalog:
+                v_id = vid["id"]
+                if v_id not in completed_ids and v_id not in leased_ids:
+                    selected.append(vid)
+                    leased_ids.add(v_id) # Prevent duplicate assignment in this batch
+                    if len(selected) >= batch_size:
+                        break
+            if len(selected) >= batch_size:
+                break
 
         if not selected:
             return []
 
-        # Write this worker's lease
+        # 3. Write this worker's lease to HF bucket
         lease_payload = {
             "worker_id": self.node_id,
             "leased_at": now,
@@ -213,22 +332,39 @@ class ClusterCoordinator:
             pass
 
     # --- HEARTBEAT & WORKER MESH ---
-    def update_heartbeat(self, status: str, current_video: Optional[Dict[str, Any]] = None, tunnel_url: str = "", speed_str: str = "", batch_info: str = ""):
+    def update_heartbeat(
+        self,
+        status: str,
+        active_streams: List[Dict[str, Any]],
+        session_downloaded: int = 0,
+        session_hours: float = 0.0,
+        tunnel_url: str = "",
+        speed_str: str = "",
+        batch_info: str = ""
+    ):
         """Register worker heartbeat in the bucket (Thread-Safe)."""
         now = time.time()
         disk_usage = shutil.disk_usage(config.WORKING_DIR)
         used_gb = round(disk_usage.used / (1024**3), 2)
+        total_gb = round(disk_usage.total / (1024**3), 2)
         free_gb = round(disk_usage.free / (1024**3), 2)
+
+        # Primary current video for legacy consumers
+        primary_video = active_streams[0] if active_streams else {}
 
         hb_payload = {
             "worker_id": self.node_id,
             "status": status,
             "tunnel_url": tunnel_url,
-            "current_video": current_video or {},
+            "active_streams": active_streams,
+            "current_video": primary_video,
+            "session_downloaded": session_downloaded,
+            "session_hours": round(session_hours, 2),
             "speed": speed_str,
             "batch_info": batch_info,
             "disk": {
                 "used_gb": used_gb,
+                "total_gb": total_gb,
                 "free_gb": free_gb,
                 "percent": round((disk_usage.used / disk_usage.total) * 100, 1)
             },
@@ -243,8 +379,7 @@ class ClusterCoordinator:
                     bucket_id=self.bucket_id,
                     add=[(tmp_path, f"workers/{self.node_id}.json")]
                 )
-        except Exception as e:
-            # Don't let transient network blips crash the heartbeat
+        except Exception:
             pass
         finally:
             if tmp_path.exists():
@@ -253,7 +388,7 @@ class ClusterCoordinator:
     def list_active_workers(self) -> List[Dict[str, Any]]:
         """
         List all active peer workers in the cluster.
-        SAFE: Never deletes peer workers on short blips; marks inactive if >90s.
+        Marks inactive only if heartbeat is older than WORKER_OFFLINE_THRESHOLD_SEC.
         """
         now = time.time()
         active_workers = []
@@ -270,11 +405,9 @@ class ClusterCoordinator:
                     
                     time_since_hb = now - w_data.get("last_heartbeat", 0)
                     
-                    # If within 90s, active!
                     if time_since_hb <= config.WORKER_OFFLINE_THRESHOLD_SEC:
                         w_data["is_alive"] = True
                         active_workers.append(w_data)
-                    # If older than 20 mins, clean up stale artifact
                     elif time_since_hb > config.STALE_PRUNE_THRESHOLD_SEC:
                         w_id = w_data.get("worker_id")
                         if w_id and w_id != self.node_id:
@@ -283,7 +416,6 @@ class ClusterCoordinator:
                             except Exception:
                                 pass
                     else:
-                        # Stale but not yet purged (show as disconnected)
                         w_data["is_alive"] = False
                         w_data["status"] = "offline"
                         active_workers.append(w_data)
@@ -298,17 +430,65 @@ class ClusterCoordinator:
         # Ensure self is always present if alive
         self_present = any(w.get("worker_id") == self.node_id for w in active_workers)
         if not self_present:
+            usage = shutil.disk_usage(config.WORKING_DIR)
             active_workers.append({
                 "worker_id": self.node_id,
                 "status": "online",
                 "tunnel_url": "",
+                "active_streams": [],
+                "session_downloaded": 0,
+                "session_hours": 0.0,
                 "speed": "Active",
-                "disk": {"used_gb": 0.0, "free_gb": 19.5, "percent": 0.0},
+                "disk": {
+                    "used_gb": round(usage.used / (1024**3), 2),
+                    "total_gb": round(usage.total / (1024**3), 2),
+                    "percent": round((usage.used / usage.total) * 100, 1)
+                },
                 "last_heartbeat": now,
                 "is_alive": True
             })
 
         return active_workers
+
+    def get_cluster_overview(self) -> Dict[str, Any]:
+        """Calculates cluster-wide aggregated metrics across all active nodes."""
+        active_workers = self.list_active_workers()
+        live_workers = [w for w in active_workers if w.get("is_alive", True)]
+        node_count = max(1, len(live_workers))
+
+        # Aggregate Disk across all active nodes
+        total_used_disk = sum(w.get("disk", {}).get("used_gb", 0.0) for w in live_workers)
+        total_cluster_capacity = round(node_count * config.DISK_PER_NODE_GB, 1)
+        total_cluster_trigger = round(node_count * config.DISK_THRESHOLD_GB, 1)
+
+        # Aggregate active streams from all workers
+        all_active_streams = []
+        total_cluster_downloaded = 0
+        total_cluster_speed_val = 0.0
+
+        for w in live_workers:
+            w_id = w.get("worker_id", "unknown")
+            total_cluster_downloaded += w.get("session_downloaded", 0)
+            streams = w.get("active_streams", [])
+            for st in streams:
+                st_copy = dict(st)
+                st_copy["worker_id"] = w_id
+                all_active_streams.append(st_copy)
+
+        return {
+            "node_count": node_count,
+            "live_workers": active_workers,
+            "cluster_disk": {
+                "used_gb": round(total_used_disk, 2),
+                "total_gb": total_cluster_capacity,
+                "trigger_gb": total_cluster_trigger,
+                "percent": round((total_used_disk / total_cluster_capacity) * 100, 1) if total_cluster_capacity > 0 else 0.0
+            },
+            "all_active_streams": all_active_streams,
+            "total_cluster_downloaded": total_cluster_downloaded,
+            "total_harvested_hours": round(self.manifest_cache.get("total_hours", 0.0), 2),
+            "total_completed_videos": len(self.manifest_cache.get("completed", {}))
+        }
 
     # --- CLUSTER REMOTE COMMANDS ---
     def send_command(self, action: str, target_worker: Optional[str] = None):

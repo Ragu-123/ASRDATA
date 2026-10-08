@@ -20,8 +20,9 @@ class IngestionWorker:
     """
     High-performance ingestion engine:
     - Dedicated daemon heartbeat thread (never misses heartbeats).
-    - Concurrent stream downloader (2 parallel streams per node).
-    - Clean numeric telemetry (no ANSI codes, working progress bars).
+    - Concurrent stream downloader (3 parallel streams per node for 4 vCPUs).
+    - Centralized coordinator leasing (zero YouTube channel re-scraping overhead).
+    - Clean numeric telemetry with per-node processed counters.
     """
     def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = ""):
         self.coordinator = coordinator
@@ -38,6 +39,8 @@ class IngestionWorker:
         self.batch_info: str = "Idle"
         self.download_speed: str = "0 MB/s"
         self.session_count: int = 0
+        self.session_seconds: float = 0.0
+        self.session_hours: float = 0.0
         self.telemetry_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         self._lock = threading.Lock()
 
@@ -62,15 +65,16 @@ class IngestionWorker:
         total_gb = round(usage.total / (1024**3), 2)
 
         with self._lock:
-            # Pick first active video or empty dict
-            current_vid = next(iter(self.active_videos.values()), {})
+            active_list = [dict(v) for v in self.active_videos.values()]
+            current_vid = active_list[0] if active_list else {}
 
         return {
             "node_id": config.NODE_ID,
-            "status": "paused" if self.paused else ("downloading" if self.running and self.active_videos else "idle"),
+            "status": "paused" if self.paused else ("downloading" if self.running and active_list else "idle"),
             "tunnel_url": self.tunnel_url,
             "current_video": current_vid,
-            "active_videos_count": len(self.active_videos),
+            "active_streams": active_list,
+            "active_videos_count": len(active_list),
             "speed": self.download_speed,
             "batch_info": self.batch_info,
             "disk": {
@@ -80,6 +84,7 @@ class IngestionWorker:
                 "threshold_gb": config.DISK_THRESHOLD_GB
             },
             "session_downloaded": self.session_count,
+            "session_hours": round(self.session_hours, 2),
             "total_harvested_hours": round(self.coordinator.manifest_cache.get("total_hours", 0.0), 2),
             "total_completed_videos": len(self.coordinator.manifest_cache.get("completed", {}))
         }
@@ -105,11 +110,13 @@ class IngestionWorker:
             try:
                 status_str = "paused" if self.paused else ("downloading" if self.active_videos else "idle")
                 with self._lock:
-                    cur_vid = next(iter(self.active_videos.values()), {})
+                    active_list = [dict(v) for v in self.active_videos.values()]
                 
                 self.coordinator.update_heartbeat(
                     status=status_str,
-                    current_video=cur_vid,
+                    active_streams=active_list,
+                    session_downloaded=self.session_count,
+                    session_hours=self.session_hours,
                     tunnel_url=self.tunnel_url,
                     speed_str=self.download_speed,
                     batch_info=self.batch_info
@@ -159,39 +166,11 @@ class IngestionWorker:
                 time.sleep(2)
                 continue
 
-            # 2. Fetch candidate videos across channels
-            channels = self.coordinator.load_channels()
-            candidate_videos = []
-            for ch in channels:
-                if not ch.get("active", True):
-                    continue
-                ch_url = ch["url"]
-                try:
-                    ydl_opts_meta = {'extract_flat': True, 'quiet': True}
-                    with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
-                        meta = ydl.extract_info(ch_url, download=False)
-                        entries = meta.get("entries", [])
-                        for e in entries:
-                            if e.get("id"):
-                                candidate_videos.append({
-                                    "id": e["id"],
-                                    "title": e.get("title", ""),
-                                    "duration": e.get("duration", 0),
-                                    "channel": ch.get("name", "Unknown")
-                                })
-                except Exception as e:
-                    print(f"[WORKER] Error reading channel {ch_url}: {e}")
-
-            if not candidate_videos:
-                self.batch_info = "No videos found. Retrying in 10s..."
-                time.sleep(10)
-                continue
-
-            # 3. Atomically lease a batch of videos
-            batch = self.coordinator.lease_batch(candidate_videos, batch_size=config.BATCH_LEASE_SIZE)
+            # 2. Atomically lease next batch from coordinator (sub-second, cached catalog)
+            batch = self.coordinator.lease_next_batch(batch_size=config.BATCH_LEASE_SIZE)
             if not batch:
-                self.batch_info = "Waiting for new videos / peer leases"
-                time.sleep(10)
+                self.batch_info = "Waiting for videos / peer leases"
+                time.sleep(8)
                 continue
 
             print(f"\n[WORKER {config.NODE_ID}] Successfully leased batch of {len(batch)} videos!")
@@ -211,7 +190,7 @@ class IngestionWorker:
             vid_id = item["id"]
             t0 = time.time()
 
-            # Clean Hook without ANSI escape codes
+            # Clean Progress Hook
             def ydl_hook(d):
                 if d['status'] == 'downloading':
                     total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
@@ -262,7 +241,7 @@ class IngestionWorker:
             with self._lock:
                 self.active_videos[vid_id] = {
                     "id": vid_id,
-                    "title": item["title"],
+                    "title": item.get("title", ""),
                     "duration_seconds": item.get("duration", 0),
                     "channel": item.get("channel", "Unknown"),
                     "progress": 0.0,
@@ -285,7 +264,7 @@ class IngestionWorker:
 
                     return {
                         "id": vid_id,
-                        "title": item["title"],
+                        "title": item.get("title", ""),
                         "duration_seconds": dur,
                         "file": filename,
                         "size_mb": round(size_mb, 2),
@@ -299,7 +278,7 @@ class IngestionWorker:
                     if vid_id in self.active_videos:
                         del self.active_videos[vid_id]
 
-        # Execute using ThreadPoolExecutor for 2 concurrent streams
+        # Execute concurrently across threads (3 streams per node)
         with ThreadPoolExecutor(max_workers=config.CONCURRENT_DOWNLOADS_PER_NODE) as executor:
             future_to_item = {executor.submit(download_single, it): it for it in batch}
             for future in as_completed(future_to_item):
@@ -312,11 +291,15 @@ class IngestionWorker:
 
                 if res:
                     vid_id = res["id"]
+                    dur = res["duration_seconds"]
                     self.session_count += 1
+                    self.session_seconds += dur
+                    self.session_hours = round(self.session_seconds / 3600.0, 2)
+
                     with self._lock:
                         self.pending_manifest_updates[vid_id] = {
                             "title": res["title"],
-                            "duration_seconds": res["duration_seconds"],
+                            "duration_seconds": dur,
                             "file": res["file"],
                             "size_mb": res["size_mb"],
                             "worker": config.NODE_ID,

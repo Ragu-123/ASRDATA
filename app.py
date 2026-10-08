@@ -58,6 +58,12 @@ async def get_workers():
         return coordinator_ref.list_active_workers()
     return []
 
+@app.get("/api/cluster")
+async def get_cluster():
+    if coordinator_ref:
+        return coordinator_ref.get_cluster_overview()
+    return {"node_count": 1, "live_workers": [], "all_active_streams": []}
+
 @app.post("/api/flush")
 async def trigger_flush():
     if worker_ref:
@@ -77,10 +83,13 @@ async def websocket_telemetry(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
+            payload = {}
             if worker_ref:
-                status = worker_ref.get_status()
-                await websocket.send_json(status)
-            await asyncio.sleep(0.5)
+                payload["local"] = worker_ref.get_status()
+            if coordinator_ref:
+                payload["cluster"] = coordinator_ref.get_cluster_overview()
+            await websocket.send_json(payload)
+            await asyncio.sleep(0.8)
     except WebSocketDisconnect:
         pass
     except Exception:

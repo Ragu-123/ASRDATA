@@ -26,6 +26,24 @@
       }
     }
   </script>
+  <style>
+    /* Custom clean scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen font-sans antialiased selection:bg-emerald-500 selection:text-white">
 
@@ -97,12 +115,12 @@
           <span class="text-sm font-semibold text-slate-400">files synced</span>
         </div>
         <div class="text-[11px] text-slate-600 flex items-center justify-between">
-          <span>Session downloaded:</span>
+          <span>Cluster session total:</span>
           <span class="font-mono text-emerald-700 font-bold bg-emerald-50 px-1.5 rounded" id="session-vids">0</span>
         </div>
         <div class="text-[11px] text-slate-600 flex items-center justify-between mt-1.5">
-          <span>Storage saved:</span>
-          <span class="font-medium text-slate-700">1 File / Whole Video</span>
+          <span>Format & Quality:</span>
+          <span class="font-semibold text-slate-700">Native 1-File Audio</span>
         </div>
       </div>
 
@@ -116,37 +134,37 @@
           <span class="text-3xl font-black text-slate-900 font-mono tracking-tight" id="cluster-speed">0 MB/s</span>
         </div>
         <div class="text-[11px] text-slate-600 flex items-center justify-between">
-          <span>Format:</span>
-          <span class="font-semibold text-emerald-700">Native Opus/M4A</span>
+          <span>Parallel Streams:</span>
+          <span class="font-semibold text-emerald-700">3 per node</span>
         </div>
         <div class="text-[11px] text-slate-600 flex items-center justify-between mt-1.5">
-          <span>Parallel streams:</span>
-          <span class="font-semibold text-slate-700">2 streams / node</span>
+          <span>HTTP Chunk Buffer:</span>
+          <span class="font-semibold text-slate-700">10 MB Fast Direct</span>
         </div>
       </div>
 
-      <!-- Card 4: Local Kaggle Storage Monitor -->
+      <!-- Card 4: Aggregate Cluster Kaggle Storage -->
       <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow transition">
         <div class="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-          <span>Kaggle Local Disk</span>
+          <span>Cluster Kaggle Storage</span>
           <div class="p-1.5 rounded-lg bg-purple-50 text-purple-600"><i data-lucide="hard-drive" class="w-4 h-4"></i></div>
         </div>
         <div class="flex items-baseline gap-2 mb-2.5">
-          <span class="text-3xl font-black text-slate-900 tracking-tight" id="disk-used-gb">0.0</span>
-          <span class="text-sm font-semibold text-slate-400">/ 19.5 GB</span>
+          <span class="text-3xl font-black text-slate-900 tracking-tight" id="cluster-disk-used">0.0</span>
+          <span class="text-sm font-semibold text-slate-400">/ <span id="cluster-disk-total">19.5</span> GB</span>
         </div>
         <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-200">
-          <div id="disk-progress-bar" class="bg-purple-600 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
+          <div id="cluster-disk-bar" class="bg-purple-600 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
         </div>
         <div class="flex items-center justify-between text-[11px] text-slate-600 mt-2">
           <span>Auto-Flush trigger:</span>
-          <span class="font-mono text-purple-700 font-bold bg-purple-50 px-1.5 rounded">14.0 GB</span>
+          <span class="font-mono text-purple-700 font-bold bg-purple-50 px-1.5 rounded" id="cluster-disk-trigger">14.0 GB</span>
         </div>
       </div>
 
     </div>
 
-    <!-- Active Download Card on This Node -->
+    <!-- Active Download Streams Container (Cluster-Wide, Scrollable, Circular Progress Rings) -->
     <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4 mb-4">
         <div class="flex items-center gap-2.5">
@@ -154,7 +172,8 @@
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
           </span>
-          <h2 class="text-base font-bold text-slate-900">Active Download Stream (This Node)</h2>
+          <h2 class="text-base font-bold text-slate-900">Active Download Streams (Cluster-Wide)</h2>
+          <span id="active-streams-count-badge" class="px-2 py-0.5 text-xs font-mono font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">0 Streams</span>
         </div>
         <div class="flex items-center gap-3 text-xs text-slate-600 font-mono">
           <span id="active-batch-info" class="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 font-semibold text-slate-700">Batch: Idle</span>
@@ -164,36 +183,15 @@
         </div>
       </div>
 
-      <div id="active-video-container" class="space-y-4">
-        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div class="space-y-1 max-w-3xl">
-            <h3 id="current-video-title" class="text-base font-bold text-slate-900 truncate">Waiting for next video in batch queue...</h3>
-            <p class="text-xs text-slate-500 flex items-center gap-2">
-              <span id="current-video-channel" class="font-medium text-slate-700">Channel: —</span>
-              • <span id="current-video-id" class="font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">ID: —</span>
-              • <span id="current-video-dur" class="font-mono text-slate-600">Duration: —</span>
-            </p>
-          </div>
-          <div class="flex items-center gap-4 text-xs font-mono text-slate-700 flex-shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-            <div>Speed: <span id="current-video-speed" class="text-emerald-600 font-bold">0 MB/s</span></div>
-            <div>ETA: <span id="current-video-eta" class="text-amber-600 font-bold">—</span></div>
-          </div>
-        </div>
-
-        <!-- Working Smooth Progress Bar -->
-        <div class="space-y-1.5">
-          <div class="flex justify-between text-xs font-mono text-slate-600">
-            <span class="font-semibold text-slate-700">Download Progress</span>
-            <span id="current-video-pct" class="text-emerald-700 font-black">0.0%</span>
-          </div>
-          <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden p-0.5 border border-slate-200 shadow-inner">
-            <div id="video-progress-bar" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-          </div>
+      <!-- Scrollable Streams List (User Scrollable, NOT auto-scrolling) -->
+      <div id="active-streams-container" class="max-h-[380px] overflow-y-auto pr-1 space-y-3">
+        <div class="p-8 text-center text-slate-400 text-xs font-mono bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+          Waiting for active video downloads across cluster nodes...
         </div>
       </div>
     </div>
 
-    <!-- Parallel Kaggle Nodes Mesh (Multi-Worker Grid) -->
+    <!-- Parallel Kaggle Nodes Mesh (Scrollable, Processed Metrics per Node) -->
     <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
       <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
         <div>
@@ -208,10 +206,12 @@
         </button>
       </div>
 
-      <!-- Grid of Worker Nodes -->
-      <div id="workers-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center animate-pulse">
-          Discovering active peer nodes from Hugging Face Bucket...
+      <!-- Scrollable Grid of Worker Nodes -->
+      <div class="max-h-[460px] overflow-y-auto pr-1">
+        <div id="workers-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="col-span-full p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center animate-pulse">
+            Discovering active peer nodes from Hugging Face Bucket...
+          </div>
         </div>
       </div>
     </div>
@@ -224,7 +224,7 @@
             <i data-lucide="youtube" class="w-5 h-5 text-red-600"></i>
             Channel Queue Manager
           </h2>
-          <p class="text-xs text-slate-500">Added channels are saved directly to <code class="text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200 font-mono font-medium">channels.json</code> in the bucket and divided across all running instances.</p>
+          <p class="text-xs text-slate-500">Channels are centrally cataloged in the bucket. Slices are automatically leased to all parallel nodes with zero delay.</p>
         </div>
       </div>
 
@@ -246,9 +246,9 @@
       </form>
 
       <!-- Channels Table -->
-      <div class="overflow-x-auto rounded-xl border border-slate-200">
+      <div class="max-h-72 overflow-y-auto rounded-xl border border-slate-200">
         <table class="w-full text-left text-xs">
-          <thead class="bg-slate-50 text-slate-600 uppercase font-mono border-b border-slate-200 font-semibold">
+          <thead class="bg-slate-50 text-slate-600 uppercase font-mono border-b border-slate-200 font-semibold sticky top-0">
             <tr>
               <th class="p-3">Channel Name</th>
               <th class="p-3">URL</th>
@@ -275,7 +275,24 @@
     // Initialize Lucide Icons
     lucide.createIcons();
 
-    // WebSocket / Polling Connection
+    // Helper: Build SVG Circular Progress Ring
+    function buildCircularProgressRing(pct) {
+      const cleanPct = Math.min(Math.max(Number(pct) || 0, 0), 100);
+      return `
+        <div class="relative w-12 h-12 flex-shrink-0 flex items-center justify-center">
+          <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
+            <path class="text-slate-100" stroke-width="3.5" stroke="currentColor" fill="none"
+              d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+            <path class="text-emerald-500 transition-all duration-300" stroke-width="3.5"
+              stroke-dasharray="${cleanPct.toFixed(1)}, 100" stroke-linecap="round" stroke="currentColor" fill="none"
+              d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          </svg>
+          <span class="absolute text-[11px] font-mono font-bold text-slate-800">${cleanPct.toFixed(0)}%</span>
+        </div>
+      `;
+    }
+
+    // WebSocket Telemetry Stream
     function connectTelemetry() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -303,59 +320,99 @@
     }
 
     // Update Dashboard DOM with Telemetry Snapshot
-    function updateDashboard(data) {
-      if (!data) return;
+    function updateDashboard(payload) {
+      if (!payload) return;
 
-      currentWorkerId = data.node_id || "node-local";
+      const local = payload.local || payload; // fallback if single dict
+      const cluster = payload.cluster || {};
+
+      currentWorkerId = local.node_id || "node-local";
       document.getElementById("this-node-id").textContent = `Node: ${currentWorkerId}`;
 
-      // Update Hours
-      const totalHours = data.total_harvested_hours || 0.0;
+      // 1. Total Hours Harvested
+      const totalHours = cluster.total_harvested_hours || local.total_harvested_hours || 0.0;
       document.getElementById("total-hours").textContent = totalHours.toFixed(1);
       const hoursPct = Math.min((totalHours / 5000.0) * 100, 100);
       document.getElementById("hours-progress-bar").style.width = `${hoursPct}%`;
       document.getElementById("hours-pct-text").textContent = `${hoursPct.toFixed(1)}% of 5,000 hr foundational goal`;
 
-      // Update Videos
-      document.getElementById("total-videos").textContent = data.total_completed_videos || 0;
-      document.getElementById("session-vids").textContent = data.session_downloaded || 0;
+      // 2. Completed Videos
+      const totalVideos = cluster.total_completed_videos || local.total_completed_videos || 0;
+      document.getElementById("total-videos").textContent = totalVideos;
+      const sessionVids = cluster.total_cluster_downloaded || local.session_downloaded || 0;
+      document.getElementById("session-vids").textContent = sessionVids;
 
-      // Update Speed
-      document.getElementById("cluster-speed").textContent = data.speed || "0 MB/s";
+      // 3. Active Speed
+      document.getElementById("cluster-speed").textContent = local.speed || "0 MB/s";
+      document.getElementById("active-batch-info").textContent = local.batch_info || "Batch: Idle";
 
-      // Update Local Disk
-      if (data.disk) {
-        document.getElementById("disk-used-gb").textContent = data.disk.used_gb.toFixed(1);
-        const diskPct = Math.min((data.disk.used_gb / data.disk.total_gb) * 100, 100);
-        const diskBar = document.getElementById("disk-progress-bar");
+      // 4. Aggregate Cluster Kaggle Storage
+      const diskInfo = cluster.cluster_disk || local.disk;
+      if (diskInfo) {
+        const used = diskInfo.used_gb || 0.0;
+        const total = diskInfo.total_gb || 19.5;
+        const trigger = diskInfo.trigger_gb || 14.0;
+        const nodeCount = cluster.node_count || 1;
+
+        document.getElementById("cluster-disk-used").textContent = used.toFixed(1);
+        document.getElementById("cluster-disk-total").textContent = total.toFixed(1);
+        document.getElementById("cluster-disk-trigger").textContent = `${trigger.toFixed(1)} GB across ${nodeCount} node(s)`;
+
+        const diskPct = Math.min((used / total) * 100, 100);
+        const diskBar = document.getElementById("cluster-disk-bar");
         diskBar.style.width = `${diskPct}%`;
-        if (data.disk.used_gb >= 13.0) {
+        if (used >= (trigger * 0.9)) {
           diskBar.className = "bg-red-500 h-1.5 rounded-full transition-all duration-500";
-        } else if (data.disk.used_gb >= 10.0) {
+        } else if (used >= (trigger * 0.7)) {
           diskBar.className = "bg-amber-500 h-1.5 rounded-full transition-all duration-500";
         } else {
           diskBar.className = "bg-purple-600 h-1.5 rounded-full transition-all duration-500";
         }
       }
 
-      // Update Active Video Stream
-      document.getElementById("active-batch-info").textContent = data.batch_info || "Batch: Idle";
-      const curVid = data.current_video || {};
-      if (curVid.title) {
-        document.getElementById("current-video-title").textContent = curVid.title;
-        document.getElementById("current-video-channel").textContent = `Channel: ${curVid.channel || '—'}`;
-        document.getElementById("current-video-id").textContent = `ID: ${curVid.id || '—'}`;
-        const durMin = curVid.duration_seconds ? (curVid.duration_seconds/60).toFixed(1) : '—';
-        document.getElementById("current-video-dur").textContent = `Duration: ${durMin} mins`;
-        document.getElementById("current-video-speed").textContent = curVid.speed || data.speed || "0 MB/s";
-        document.getElementById("current-video-eta").textContent = curVid.eta || "—";
-        const pct = curVid.progress || 0.0;
-        document.getElementById("current-video-pct").textContent = `${pct.toFixed(1)}%`;
-        document.getElementById("video-progress-bar").style.width = `${pct}%`;
+      // 5. Active Streams Container (Cluster-wide with Circular Progress Rings)
+      let activeStreams = cluster.all_active_streams || [];
+      if (!activeStreams.length && local.active_streams && local.active_streams.length) {
+        activeStreams = local.active_streams.map(s => ({ ...s, worker_id: currentWorkerId }));
+      }
+
+      const streamsContainer = document.getElementById("active-streams-container");
+      const streamsCountBadge = document.getElementById("active-streams-count-badge");
+      streamsCountBadge.textContent = `${activeStreams.length} Stream${activeStreams.length === 1 ? '' : 's'}`;
+
+      if (!activeStreams || activeStreams.length === 0) {
+        streamsContainer.innerHTML = `
+          <div class="p-8 text-center text-slate-400 text-xs font-mono bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+            Waiting for active video downloads across cluster nodes...
+          </div>
+        `;
       } else {
-        document.getElementById("current-video-title").textContent = "Waiting for next video in batch queue...";
-        document.getElementById("current-video-pct").textContent = "0.0%";
-        document.getElementById("video-progress-bar").style.width = "0%";
+        streamsContainer.innerHTML = activeStreams.map(st => {
+          const ringHtml = buildCircularProgressRing(st.progress || 0);
+          const durMin = st.duration_seconds ? (st.duration_seconds / 60).toFixed(1) : '—';
+          return `
+            <div class="p-3.5 bg-slate-50/70 hover:bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-4 transition shadow-xs">
+              <div class="flex items-center gap-3 min-w-0">
+                ${ringHtml}
+                <div class="min-w-0">
+                  <h4 class="font-bold text-slate-900 text-xs sm:text-sm truncate max-w-md lg:max-w-xl">
+                    ${st.title || 'Downloading Tamil Audio...'}
+                  </h4>
+                  <div class="flex items-center gap-2 text-[11px] text-slate-500 mt-1 flex-wrap">
+                    <span class="font-semibold text-slate-700">${st.channel || 'YouTube'}</span>
+                    • <span class="font-mono text-slate-600 bg-white px-1.5 py-0.5 rounded border border-slate-200">${st.id}</span>
+                    • <span>${durMin} mins</span>
+                    • <span class="font-mono text-indigo-700 font-semibold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">🖥️ ${st.worker_id || 'node'}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="flex flex-col items-end flex-shrink-0 text-right">
+                <span class="text-xs font-mono font-bold text-emerald-600">${st.speed || '0 MB/s'}</span>
+                <span class="text-[11px] font-mono text-amber-600 mt-0.5">ETA: ${st.eta || '—'}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
       }
     }
 
@@ -365,7 +422,9 @@
         const res = await fetch("/api/workers");
         const workers = await res.json();
         const grid = document.getElementById("workers-grid");
-        document.getElementById("active-nodes-badge").textContent = `${workers.length} Active Node${workers.length === 1 ? '' : 's'}`;
+        
+        const liveWorkers = workers.filter(w => w.is_alive !== false);
+        document.getElementById("active-nodes-badge").textContent = `${liveWorkers.length} Active Node${liveWorkers.length === 1 ? '' : 's'}`;
 
         if (!workers || workers.length === 0) {
           grid.innerHTML = `<div class="col-span-full p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">No other peer nodes detected. Start another Kaggle 'Save Version' job to automatically scale!</div>`;
@@ -375,8 +434,11 @@
         grid.innerHTML = workers.map(w => {
           const isThis = w.worker_id === currentWorkerId;
           const diskUsed = w.disk ? w.disk.used_gb : 0;
-          const cur = w.current_video || {};
           const isAlive = w.is_alive !== false;
+          const sessionVids = w.session_downloaded || 0;
+          const sessionHrs = w.session_hours || 0.0;
+          const activeStreamsCount = (w.active_streams && w.active_streams.length) || 0;
+
           return `
             <div class="p-4 rounded-xl bg-white border ${isThis ? 'border-emerald-500 ring-2 ring-emerald-500/10' : 'border-slate-200'} space-y-3 shadow-sm">
               <div class="flex items-center justify-between">
@@ -387,13 +449,27 @@
                   ${isAlive ? (w.status || 'active') : 'offline'}
                 </span>
               </div>
+
+              <!-- Node Processed Counter Highlight -->
+              <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 flex items-center justify-between text-xs">
+                <span class="text-emerald-800 font-medium flex items-center gap-1">
+                  <i data-lucide="check-circle" class="w-3.5 h-3.5 text-emerald-600"></i> Processed:
+                </span>
+                <span class="font-mono font-bold text-emerald-700">
+                  ${sessionVids} videos (${sessionHrs} hrs)
+                </span>
+              </div>
+
               <div class="space-y-1">
-                <p class="text-xs text-slate-800 truncate font-semibold">${cur.title || 'Idle / Waiting for batch'}</p>
+                <p class="text-xs text-slate-700 truncate font-semibold">
+                  ${w.batch_info || (activeStreamsCount > 0 ? `${activeStreamsCount} streams downloading` : 'Idle / Waiting for batch')}
+                </p>
                 <div class="flex items-center justify-between text-[11px] text-slate-500 font-mono">
                   <span>Speed: <strong class="text-slate-800">${w.speed || '0 MB/s'}</strong></span>
                   <span>Disk: <strong class="text-purple-700">${diskUsed}GB</strong> / 19.5GB</span>
                 </div>
               </div>
+
               <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                 ${w.tunnel_url ? `<a href="${w.tunnel_url}" target="_blank" class="text-indigo-600 hover:underline flex items-center gap-1 text-[11px] font-mono font-semibold">Direct Tunnel <i data-lucide="external-link" class="w-3 h-3"></i></a>` : '<span class="text-slate-400 text-[11px]">Local Host</span>'}
                 <button onclick="controlNode('${w.worker_id}', 'flush')" class="text-emerald-700 hover:text-emerald-800 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Flush Node</button>

@@ -17,6 +17,7 @@ STAGING_DIR.mkdir(parents=True, exist_ok=True)
 CLOUDFLARED_BIN = WORKING_DIR / "cloudflared"
 
 # Quota & Batch Controls
+DISK_PER_NODE_GB = 19.5
 DISK_THRESHOLD_GB = float(os.getenv("DISK_THRESHOLD_GB", "14.0"))
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "30"))
 LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "45"))
@@ -26,15 +27,18 @@ HEARTBEAT_INTERVAL_SEC = 8              # Heartbeat frequency (daemon thread)
 WORKER_OFFLINE_THRESHOLD_SEC = 90       # Mark offline only after 90s of no heartbeat
 STALE_PRUNE_THRESHOLD_SEC = 1200        # Prune from bucket only after 20 minutes offline
 
-# Speed Optimization
-CONCURRENT_DOWNLOADS_PER_NODE = 2       # Download 2 audio streams concurrently per node
-HTTP_CHUNK_SIZE = 10485760              # 10MB chunk size (bypasses YouTube throttling)
+# Speed Optimization for Kaggle (4 vCPUs)
+CONCURRENT_DOWNLOADS_PER_NODE = 3       # 3 concurrent streams per node to saturate 4 Kaggle cores
+HTTP_CHUNK_SIZE = 10485760              # 10MB chunk size (bypasses YouTube CDN throttling)
 
 # Web Dashboard Port
 PORT = int(os.getenv("PORT", "8000"))
 
-# Guaranteed Unique Node ID per instance
-NODE_ID = os.getenv("WORKER_ID", f"node-{int(time.time()) % 100000}-{uuid.uuid4().hex[:4]}")
+# Guaranteed Unique Node ID per instance (prevents node collisions)
+NODE_ID = os.getenv("WORKER_ID", f"node-{uuid.uuid4().hex[:6]}")
+
+# Metadata Catalog Fetch Chunk Size
+CATALOG_FETCH_CHUNK = 500
 
 # Default Seed Channels if channels.json is blank
 DEFAULT_CHANNELS = [
