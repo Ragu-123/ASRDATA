@@ -1,5 +1,6 @@
 import time
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, List
 from huggingface_hub import HfApi
@@ -20,8 +21,28 @@ class BucketSync:
         """
         Upload all audio files currently in staging to the bucket,
         merge updates into the global manifest, and purge local files.
+        Strictly strips video files or drops non-audio containers.
         """
-        audio_files = list(config.STAGING_DIR.glob("*.*"))
+        raw_files = list(config.STAGING_DIR.glob("*.*"))
+        audio_files = []
+        for f in raw_files:
+            if f.suffix.lower() in [".mp4", ".webm", ".mkv"]:
+                audio_target = f.with_suffix(".m4a")
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(f), "-vn", "-c:a", "copy", str(audio_target)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
+                    )
+                    f.unlink(missing_ok=True)
+                    if audio_target.exists() and audio_target.stat().st_size > 10000:
+                        audio_files.append(audio_target)
+                except Exception:
+                    f.unlink(missing_ok=True)
+            elif f.suffix.lower() in [".m4a", ".opus", ".ogg", ".mp3", ".wav", ".aac"]:
+                audio_files.append(f)
+            else:
+                f.unlink(missing_ok=True)
+
         if not audio_files:
             return 0
 

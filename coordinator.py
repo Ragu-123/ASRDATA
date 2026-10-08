@@ -22,6 +22,11 @@ class ClusterCoordinator:
         self.manifest_cache = {"completed": {}, "total_hours": 0.0, "last_updated": ""}
         self.channels_cache = []
         self.catalog_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self.exhausted_channels = set()
+        self._workers_cache: List[Dict[str, Any]] = []
+        self._workers_cache_time: float = 0.0
+        self._manifest_cache_time: float = 0.0
+        self._channels_cache_time: float = 0.0
         self._lock = threading.Lock()
         self._ensure_bucket_ready()
 
@@ -78,8 +83,12 @@ class ClusterCoordinator:
             pass
 
     # --- MANIFEST OPERATIONS ---
-    def load_manifest(self) -> Dict[str, Any]:
-        """Fetch global manifest.json from the bucket."""
+    def load_manifest(self, force: bool = False) -> Dict[str, Any]:
+        """Fetch global manifest.json from the bucket with TTL caching."""
+        now = time.time()
+        if not force and (now - self._manifest_cache_time < 15.0) and self.manifest_cache.get("completed"):
+            return self.manifest_cache
+
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
@@ -92,8 +101,10 @@ class ClusterCoordinator:
                 )
                 with open(tmp_path, "r", encoding="utf-8") as f:
                     self.manifest_cache = json.load(f)
+                    self._manifest_cache_time = now
             else:
                 self.manifest_cache = {"completed": {}, "total_hours": 0.0, "last_updated": ""}
+                self._manifest_cache_time = now
         except Exception as e:
             print(f"[COORDINATOR] Warning loading manifest: {e}")
         finally:
@@ -104,6 +115,7 @@ class ClusterCoordinator:
     def save_manifest(self, manifest: Dict[str, Any]):
         """Upload updated manifest to the bucket."""
         self.manifest_cache = manifest
+        self._manifest_cache_time = time.time()
         manifest["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
             json.dump(manifest, tmp, indent=2, ensure_ascii=False)
@@ -118,8 +130,12 @@ class ClusterCoordinator:
                 tmp_path.unlink()
 
     # --- CHANNELS QUEUE OPERATIONS ---
-    def load_channels(self) -> List[Dict[str, Any]]:
-        """Fetch configured channels from the bucket."""
+    def load_channels(self, force: bool = False) -> List[Dict[str, Any]]:
+        """Fetch configured channels from the bucket with TTL caching."""
+        now = time.time()
+        if not force and (now - self._channels_cache_time < 30.0) and self.channels_cache:
+            return self.channels_cache
+
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
@@ -132,9 +148,11 @@ class ClusterCoordinator:
                 )
                 with open(tmp_path, "r", encoding="utf-8") as f:
                     self.channels_cache = json.load(f)
+                    self._channels_cache_time = now
             else:
                 self.channels_cache = config.DEFAULT_CHANNELS
                 self.save_channels(self.channels_cache)
+                self._channels_cache_time = now
         except Exception as e:
             print(f"[COORDINATOR] Warning loading channels: {e}")
             if not self.channels_cache:
@@ -147,6 +165,7 @@ class ClusterCoordinator:
     def save_channels(self, channels: List[Dict[str, Any]]):
         """Upload channels list to the bucket."""
         self.channels_cache = channels
+        self._channels_cache_time = time.time()
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
             json.dump(channels, tmp, indent=2, ensure_ascii=False)
             tmp_path = Path(tmp.name)
@@ -219,10 +238,10 @@ class ClusterCoordinator:
         uncompleted = [v for v in catalog if v.get("id") not in completed_ids]
 
         # 3. If uncompleted count is lower than needed, expand metadata
-        if len(uncompleted) < needed_uncompleted and len(catalog) < 3500:
+        if len(uncompleted) < needed_uncompleted and ch_id not in self.exhausted_channels and len(catalog) < 4500:
             start_idx = len(catalog) + 1
             chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 3)
-            end_idx = min(3500, len(catalog) + chunk_size)
+            end_idx = min(4500, len(catalog) + chunk_size)
             print(f"[COORDINATOR] Expanding catalog for {channel.get('name', ch_id)}: fetching items {start_idx} to {end_idx}...")
 
             try:
@@ -257,6 +276,8 @@ class ClusterCoordinator:
                         added_count += 1
 
                 print(f"[COORDINATOR] Discovered {added_count} new videos for {ch_id} (Total catalog: {len(catalog)})")
+                if added_count == 0:
+                    self.exhausted_channels.add(ch_id)
 
                 # Upload expanded catalog to bucket so all peer nodes immediately get it
                 if added_count > 0:
@@ -274,6 +295,7 @@ class ClusterCoordinator:
 
             except Exception as e:
                 print(f"[COORDINATOR] Warning expanding channel {ch_url}: {e}")
+                self.exhausted_channels.add(ch_id)
 
         return catalog
 
@@ -297,32 +319,37 @@ class ClusterCoordinator:
         # 1. Read existing active leases from peer nodes
         leased_ids = set()
         expired_files_to_delete = []
+        temp_lease_files = []
         try:
             tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
             lease_files = [it.path for it in tree if it.path.startswith("batches/") and it.path.endswith("_lease.json")]
+            download_lease_pairs = []
             for l_path in lease_files:
                 if l_path == f"batches/{self.node_id}_lease.json":
                     continue
-                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-                    t_path = Path(tmp.name)
-                try:
-                    self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(l_path, t_path)])
-                    with open(t_path, "r", encoding="utf-8") as f:
-                        lease_data = json.load(f)
-                    
-                    l_worker = lease_data.get("worker_id")
-                    is_expired = lease_data.get("expires_at", 0) <= now
-                    is_dead_worker = l_worker not in live_node_ids
+                tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+                t_path = Path(tmp.name)
+                tmp.close()
+                download_lease_pairs.append((l_path, t_path))
+                temp_lease_files.append((l_path, t_path))
 
-                    if is_expired or is_dead_worker:
-                        expired_files_to_delete.append(l_path)
-                    else:
-                        leased_ids.update(lease_data.get("video_ids", []))
-                except Exception:
-                    pass
-                finally:
-                    if t_path.exists():
-                        t_path.unlink()
+            if download_lease_pairs:
+                self.api.download_bucket_files(bucket_id=self.bucket_id, files=download_lease_pairs)
+
+            for l_path, t_path in temp_lease_files:
+                if t_path.exists():
+                    try:
+                        with open(t_path, "r", encoding="utf-8") as f:
+                            lease_data = json.load(f)
+                        l_worker = lease_data.get("worker_id")
+                        is_expired = lease_data.get("expires_at", 0) <= now
+                        is_dead_worker = l_worker not in live_node_ids
+                        if is_expired or is_dead_worker:
+                            expired_files_to_delete.append(l_path)
+                        else:
+                            leased_ids.update(lease_data.get("video_ids", []))
+                    except Exception:
+                        pass
 
             # Clean dead/expired lease files safely
             if expired_files_to_delete:
@@ -332,6 +359,10 @@ class ClusterCoordinator:
                     pass
         except Exception as e:
             print(f"[COORDINATOR] Warning inspecting leases: {e}")
+        finally:
+            for _, t_path in temp_lease_files:
+                if t_path.exists():
+                    t_path.unlink(missing_ok=True)
 
         # 2. Iterate channels to lease uncompleted, unleased videos
         channels = self.load_channels()
@@ -439,44 +470,73 @@ class ClusterCoordinator:
             if tmp_path.exists():
                 tmp_path.unlink()
 
-    def list_active_workers(self) -> List[Dict[str, Any]]:
+    def list_active_workers(self, force: bool = False) -> List[Dict[str, Any]]:
         """
-        List all active peer workers in the cluster (READ-ONLY).
-        Never triggers aggressive delete operations on short blips.
+        List all active peer workers in the cluster with TTL caching and single-call batch download.
+        Auto-prunes offline workers and their leases from the bucket.
         """
         now = time.time()
+        if not force and (now - self._workers_cache_time < 8.0) and self._workers_cache:
+            return self._workers_cache
+
         active_workers = []
+        temp_files = []
+        dead_files = []
 
         try:
             tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
             w_paths = [it.path for it in tree if it.path.startswith("workers/") and it.path.endswith(".json")]
+
+            download_pairs = []
             for path in w_paths:
-                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-                    t_path = Path(tmp.name)
+                tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+                t_path = Path(tmp.name)
+                tmp.close()
+                download_pairs.append((path, t_path))
+                temp_files.append((path, t_path))
+
+            # Download ALL worker files in a SINGLE HTTP call
+            if download_pairs:
+                self.api.download_bucket_files(bucket_id=self.bucket_id, files=download_pairs)
+
+            for path, t_path in temp_files:
+                if t_path.exists():
+                    try:
+                        with open(t_path, "r", encoding="utf-8") as f:
+                            w_data = json.load(f)
+
+                        time_since_hb = now - w_data.get("last_heartbeat", 0)
+                        w_id = w_data.get("worker_id")
+
+                        if time_since_hb <= config.WORKER_OFFLINE_THRESHOLD_SEC:
+                            w_data["is_alive"] = True
+                            active_workers.append(w_data)
+                        else:
+                            # Prune offline worker immediately from bucket and release any lease
+                            if w_id and w_id != self.node_id:
+                                dead_files.append(f"workers/{w_id}.json")
+                                dead_files.append(f"batches/{w_id}_lease.json")
+                    except Exception:
+                        pass
+
+            # Prune offline workers from bucket
+            if dead_files:
                 try:
-                    self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(path, t_path)])
-                    with open(t_path, "r", encoding="utf-8") as f:
-                        w_data = json.load(f)
-                    
-                    time_since_hb = now - w_data.get("last_heartbeat", 0)
-                    
-                    if time_since_hb <= config.WORKER_OFFLINE_THRESHOLD_SEC:
-                        w_data["is_alive"] = True
-                        active_workers.append(w_data)
-                    elif time_since_hb <= config.STALE_PRUNE_THRESHOLD_SEC:
-                        # Inactive but not purged yet -> mark offline
-                        w_data["is_alive"] = False
-                        w_data["status"] = "offline"
-                        active_workers.append(w_data)
-                except Exception:
-                    pass
-                finally:
-                    if t_path.exists():
-                        t_path.unlink()
+                    tree_paths = {it.path for it in tree}
+                    existing_dead = [p for p in dead_files if p in tree_paths]
+                    if existing_dead:
+                        self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=existing_dead)
+                        print(f"[COORDINATOR] Auto-pruned {len(existing_dead)} offline node artifacts from bucket.")
+                except Exception as e:
+                    print(f"[COORDINATOR] Offline prune warning: {e}")
 
         except Exception as e:
             print(f"[COORDINATOR] Warning reading workers: {e}")
-            
+        finally:
+            for _, t_path in temp_files:
+                if t_path.exists():
+                    t_path.unlink(missing_ok=True)
+
         # Ensure self is always present if alive
         self_present = any(w.get("worker_id") == self.node_id for w in active_workers)
         if not self_present:
@@ -498,6 +558,8 @@ class ClusterCoordinator:
                 "is_alive": True
             })
 
+        self._workers_cache = active_workers
+        self._workers_cache_time = now
         return active_workers
 
     def get_cluster_overview(self) -> Dict[str, Any]:

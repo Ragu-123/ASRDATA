@@ -23,9 +23,9 @@ BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "30"))
 LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "45"))
 
 # Heartbeat & Mesh Timing
-HEARTBEAT_INTERVAL_SEC = 6               # Heartbeat frequency (daemon thread)
+HEARTBEAT_INTERVAL_SEC = 10              # Heartbeat frequency (daemon thread)
 WORKER_OFFLINE_THRESHOLD_SEC = 90        # Mark offline after 90s without heartbeat
-STALE_PRUNE_THRESHOLD_SEC = 900          # Prune from bucket on boot if > 15 mins inactive
+STALE_PRUNE_THRESHOLD_SEC = 600          # Prune from bucket if > 10 mins inactive
 
 # Stream Concurrency per Node
 CONCURRENT_DOWNLOADS_PER_NODE = 2        # 2 concurrent streams per node to stay within YouTube limits
@@ -45,6 +45,18 @@ DEFAULT_CHANNELS = [
         "id": "madangowri",
         "name": "Madan Gowri",
         "url": "https://www.youtube.com/@madangowri/videos",
+        "active": True
+    },
+    {
+        "id": "TheBookShowbyrjananthi",
+        "name": "The Book Show by Ananthi",
+        "url": "https://www.youtube.com/@TheBookShowbyrjananthi/videos",
+        "active": True
+    },
+    {
+        "id": "savukkumedianetwork",
+        "name": "Savukku Media Network",
+        "url": "https://www.youtube.com/@savukkumedianetwork/videos",
         "active": True
     }
 ]

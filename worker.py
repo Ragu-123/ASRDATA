@@ -1,6 +1,7 @@
 import re
 import time
 import shutil
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -229,7 +230,7 @@ class IngestionWorker:
                             self.download_speed = speed_clean
 
             ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best',
+                'format': 'ba[ext=m4a]/ba[ext=opus]/ba',
                 'outtmpl': str(config.STAGING_DIR / f"{vid_id}.%(ext)s"),
                 'quiet': True,
                 'no_warnings': True,
@@ -241,6 +242,11 @@ class IngestionWorker:
                         'player_client': ['android', 'ios']
                     }
                 },
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'm4a',
+                    'preferredquality': '128',
+                }],
                 'progress_hooks': [ydl_hook]
             }
 
@@ -265,15 +271,44 @@ class IngestionWorker:
 
                     # Look for actual downloaded file on disk
                     matching = list(config.STAGING_DIR.glob(f"{vid_id}.*"))
-                    if matching:
-                        filepath = matching[0]
-                        filename = filepath.name
-                        size_mb = filepath.stat().st_size / (1024**2)
-                    else:
-                        ext = info.get("ext", "m4a")
-                        filename = f"{vid_id}.{ext}"
-                        filepath = config.STAGING_DIR / filename
-                        size_mb = filepath.stat().st_size / (1024**2) if filepath.exists() else 0.0
+                    if not matching:
+                        return None
+
+                    filepath = matching[0]
+
+                    # STRICT AUDIO GUARD: Convert any video container (.mp4, .webm, .mkv) to .m4a audio
+                    if filepath.suffix.lower() in [".mp4", ".webm", ".mkv", ".mov", ".avi"]:
+                        audio_dest = config.STAGING_DIR / f"{vid_id}.m4a"
+                        try:
+                            # 1. Attempt fast stream copy of audio stream
+                            ret = subprocess.run(
+                                ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_dest)],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=30
+                            )
+                            # 2. If copy failed or produces invalid file, transcode audio to 128k aac
+                            if ret.returncode != 0 or not audio_dest.exists() or audio_dest.stat().st_size < 10000:
+                                subprocess.run(
+                                    ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "aac", "-b:a", "128k", str(audio_dest)],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    timeout=60
+                                )
+                            if audio_dest.exists() and audio_dest.stat().st_size > 10000:
+                                filepath.unlink(missing_ok=True)
+                                filepath = audio_dest
+                        except Exception as conv_e:
+                            print(f"[WORKER] Video stripping notice for {vid_id}: {conv_e}")
+
+                    # Reject and delete if still not a valid audio container
+                    if filepath.suffix.lower() not in [".m4a", ".opus", ".ogg", ".mp3", ".wav", ".aac"]:
+                        filepath.unlink(missing_ok=True)
+                        print(f"[WORKER] Dropped non-audio file: {filepath.name}")
+                        return None
+
+                    filename = filepath.name
+                    size_mb = filepath.stat().st_size / (1024**2)
 
                     elapsed = time.time() - t0
 

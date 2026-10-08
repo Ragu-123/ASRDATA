@@ -89,7 +89,7 @@ async def websocket_telemetry(websocket: WebSocket):
             if coordinator_ref:
                 payload["cluster"] = coordinator_ref.get_cluster_overview()
             await websocket.send_json(payload)
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(2.0)
     except WebSocketDisconnect:
         pass
     except Exception:
