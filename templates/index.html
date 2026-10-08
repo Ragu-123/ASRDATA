@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,54 +16,48 @@
           colors: {
             brand: {
               50: '#f0fdf4',
-              500: '#22c55e',
-              600: '#16a34a',
-              700: '#15803d',
+              100: '#dcfce7',
+              500: '#16a34a',
+              600: '#15803d',
+              700: '#166534',
             }
           }
         }
       }
     }
   </script>
-  <style>
-    @keyframes pulse-fast {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-    .animate-pulse-fast { animation: pulse-fast 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-  </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-brand-500 selection:text-white">
+<body class="bg-slate-50 text-slate-800 min-h-screen font-sans antialiased selection:bg-emerald-500 selection:text-white">
 
-  <!-- Top Sticky Navigation Bar -->
-  <header class="sticky top-0 z-50 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 lg:px-8 py-3.5">
+  <!-- Top Sticky Navigation Bar (Light Mode) -->
+  <header class="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-slate-200 px-4 lg:px-8 py-3.5 shadow-sm">
     <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <div class="p-2 bg-brand-500/10 border border-brand-500/20 rounded-xl text-brand-500">
-          <i data-lucide="radio" class="w-6 h-6 animate-pulse-fast"></i>
+        <div class="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-600 shadow-sm">
+          <i data-lucide="radio" class="w-6 h-6 animate-pulse"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-white flex items-center gap-2">
+          <h1 class="text-lg font-bold text-slate-900 flex items-center gap-2">
             Tamil ASR Harvest Hub
-            <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">Cluster Mesh</span>
+            <span class="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-mono font-medium">Cluster Mesh</span>
           </h1>
-          <p class="text-xs text-slate-400 flex items-center gap-1.5">
-            <span id="this-node-id" class="font-mono text-emerald-400 font-medium">Node: Initializing...</span>
-            • <span class="text-slate-500">HF Bucket:</span> <a href="https://huggingface.co/buckets/King758/media-archive-01" target="_blank" class="hover:text-brand-500 transition underline underline-offset-2">King758/media-archive-01</a>
+          <p class="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
+            <span id="this-node-id" class="font-mono text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">Node: Initializing...</span>
+            • <span class="text-slate-400">HF Bucket:</span> <a href="https://huggingface.co/buckets/King758/media-archive-01" target="_blank" class="text-slate-700 font-medium hover:text-emerald-600 transition underline underline-offset-2">King758/media-archive-01</a>
           </p>
         </div>
       </div>
 
       <!-- Cluster Mesh Stats & Global Controls -->
       <div class="flex items-center gap-2 sm:gap-3 flex-wrap">
-        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-          <span class="font-medium text-slate-200" id="active-nodes-badge">1 Active Node</span>
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-medium">
+          <span class="w-2 h-2 rounded-full bg-emerald-600 animate-ping"></span>
+          <span class="font-semibold" id="active-nodes-badge">1 Active Node</span>
         </div>
-        <button onclick="triggerGlobalFlush()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-600/30 transition text-xs font-semibold">
+        <button onclick="triggerGlobalFlush()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition text-xs font-semibold shadow-sm">
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Flush All to HF
         </button>
-        <button id="cluster-pause-btn" onclick="toggleClusterPause()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/30 text-amber-300 hover:bg-amber-600/30 transition text-xs font-semibold">
+        <button id="cluster-pause-btn" onclick="toggleClusterPause()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 transition text-xs font-semibold shadow-sm">
           <i data-lucide="pause" class="w-3.5 h-3.5"></i> Pause Cluster
         </button>
       </div>
@@ -73,164 +67,164 @@
   <!-- Main Container -->
   <main class="max-w-7xl mx-auto px-4 lg:px-8 py-6 space-y-6">
 
-    <!-- Top Key Metrics Grid -->
+    <!-- Top Key Metrics Cards (Clean Crisp Light Theme) -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       
       <!-- Card 1: Total Audio Hours -->
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 relative overflow-hidden">
-        <div class="flex items-center justify-between text-slate-400 text-xs font-medium uppercase tracking-wider mb-2">
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow transition">
+        <div class="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
           <span>Audio Harvested</span>
-          <i data-lucide="clock" class="w-4 h-4 text-emerald-400"></i>
+          <div class="p-1.5 rounded-lg bg-emerald-50 text-emerald-600"><i data-lucide="clock" class="w-4 h-4"></i></div>
         </div>
-        <div class="flex items-baseline gap-2 mb-3">
-          <span class="text-3xl font-extrabold text-white" id="total-hours">0.0</span>
-          <span class="text-sm font-medium text-slate-400">/ 5,000 hrs</span>
+        <div class="flex items-baseline gap-2 mb-2.5">
+          <span class="text-3xl font-black text-slate-900 tracking-tight" id="total-hours">0.0</span>
+          <span class="text-sm font-semibold text-slate-400">/ 5,000 hrs</span>
         </div>
-        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-          <div id="hours-progress-bar" class="bg-gradient-to-r from-emerald-500 to-teal-400 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+        <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-200">
+          <div id="hours-progress-bar" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
         </div>
-        <p class="text-[11px] text-slate-500 mt-2 font-mono" id="hours-pct-text">0.0% of foundational goal</p>
+        <p class="text-[11px] text-slate-500 mt-2 font-medium" id="hours-pct-text">0.0% of foundational goal</p>
       </div>
 
       <!-- Card 2: Completed Videos -->
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-        <div class="flex items-center justify-between text-slate-400 text-xs font-medium uppercase tracking-wider mb-2">
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow transition">
+        <div class="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
           <span>Completed Audios</span>
-          <i data-lucide="check-circle-2" class="w-4 h-4 text-blue-400"></i>
+          <div class="p-1.5 rounded-lg bg-blue-50 text-blue-600"><i data-lucide="check-circle-2" class="w-4 h-4"></i></div>
         </div>
-        <div class="flex items-baseline gap-2 mb-3">
-          <span class="text-3xl font-extrabold text-white" id="total-videos">0</span>
-          <span class="text-sm font-medium text-slate-400">files synced</span>
+        <div class="flex items-baseline gap-2 mb-2.5">
+          <span class="text-3xl font-black text-slate-900 tracking-tight" id="total-videos">0</span>
+          <span class="text-sm font-semibold text-slate-400">files synced</span>
         </div>
-        <div class="text-[11px] text-slate-400 flex items-center justify-between">
+        <div class="text-[11px] text-slate-600 flex items-center justify-between">
           <span>Session downloaded:</span>
-          <span class="font-mono text-emerald-400 font-semibold" id="session-vids">0</span>
+          <span class="font-mono text-emerald-700 font-bold bg-emerald-50 px-1.5 rounded" id="session-vids">0</span>
         </div>
-        <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
+        <div class="text-[11px] text-slate-600 flex items-center justify-between mt-1.5">
           <span>Storage saved:</span>
-          <span class="font-mono text-blue-400 font-semibold">1 File / Whole Video</span>
+          <span class="font-medium text-slate-700">1 File / Whole Video</span>
         </div>
       </div>
 
-      <!-- Card 3: Combined Cluster Speed -->
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-        <div class="flex items-center justify-between text-slate-400 text-xs font-medium uppercase tracking-wider mb-2">
-          <span>Active Download Speed</span>
-          <i data-lucide="zap" class="w-4 h-4 text-amber-400"></i>
+      <!-- Card 3: Active Download Speed -->
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow transition">
+        <div class="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
+          <span>Active Speed</span>
+          <div class="p-1.5 rounded-lg bg-amber-50 text-amber-600"><i data-lucide="zap" class="w-4 h-4"></i></div>
         </div>
-        <div class="flex items-baseline gap-2 mb-3">
-          <span class="text-3xl font-extrabold text-white font-mono" id="cluster-speed">0 MB/s</span>
+        <div class="flex items-baseline gap-2 mb-2.5">
+          <span class="text-3xl font-black text-slate-900 font-mono tracking-tight" id="cluster-speed">0 MB/s</span>
         </div>
-        <div class="text-[11px] text-slate-400 flex items-center justify-between">
+        <div class="text-[11px] text-slate-600 flex items-center justify-between">
           <span>Format:</span>
-          <span class="font-mono text-amber-400 font-medium">Native Opus/M4A (No re-encode)</span>
+          <span class="font-semibold text-emerald-700">Native Opus/M4A</span>
         </div>
-        <div class="text-[11px] text-slate-400 flex items-center justify-between mt-1">
-          <span>Fragment workers:</span>
-          <span class="font-mono text-slate-300">4 threads/stream</span>
+        <div class="text-[11px] text-slate-600 flex items-center justify-between mt-1.5">
+          <span>Parallel streams:</span>
+          <span class="font-semibold text-slate-700">2 streams / node</span>
         </div>
       </div>
 
       <!-- Card 4: Local Kaggle Storage Monitor -->
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-        <div class="flex items-center justify-between text-slate-400 text-xs font-medium uppercase tracking-wider mb-2">
+      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow transition">
+        <div class="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
           <span>Kaggle Local Disk</span>
-          <i data-lucide="hard-drive" class="w-4 h-4 text-purple-400"></i>
+          <div class="p-1.5 rounded-lg bg-purple-50 text-purple-600"><i data-lucide="hard-drive" class="w-4 h-4"></i></div>
         </div>
-        <div class="flex items-baseline gap-2 mb-3">
-          <span class="text-3xl font-extrabold text-white" id="disk-used-gb">0.0</span>
-          <span class="text-sm font-medium text-slate-400">/ 19.5 GB</span>
+        <div class="flex items-baseline gap-2 mb-2.5">
+          <span class="text-3xl font-black text-slate-900 tracking-tight" id="disk-used-gb">0.0</span>
+          <span class="text-sm font-semibold text-slate-400">/ 19.5 GB</span>
         </div>
-        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-          <div id="disk-progress-bar" class="bg-purple-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+        <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-200">
+          <div id="disk-progress-bar" class="bg-purple-600 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
         </div>
-        <div class="flex items-center justify-between text-[11px] text-slate-400 mt-2">
+        <div class="flex items-center justify-between text-[11px] text-slate-600 mt-2">
           <span>Auto-Flush trigger:</span>
-          <span class="font-mono text-purple-400 font-medium" id="disk-flush-trigger">14.0 GB</span>
+          <span class="font-mono text-purple-700 font-bold bg-purple-50 px-1.5 rounded">14.0 GB</span>
         </div>
       </div>
 
     </div>
 
     <!-- Active Download Card on This Node -->
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-4 mb-4">
+    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4 mb-4">
         <div class="flex items-center gap-2.5">
           <span class="relative flex h-3 w-3">
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
           </span>
-          <h2 class="text-base font-bold text-white">Active Download Stream (This Node)</h2>
+          <h2 class="text-base font-bold text-slate-900">Active Download Stream (This Node)</h2>
         </div>
-        <div class="flex items-center gap-3 text-xs text-slate-400 font-mono">
-          <span id="active-batch-info" class="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700">Batch: Idle</span>
-          <button onclick="triggerLocalFlush()" class="hover:text-emerald-400 transition font-medium flex items-center gap-1">
+        <div class="flex items-center gap-3 text-xs text-slate-600 font-mono">
+          <span id="active-batch-info" class="px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 font-semibold text-slate-700">Batch: Idle</span>
+          <button onclick="triggerLocalFlush()" class="hover:text-emerald-700 text-emerald-600 font-semibold transition flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
             <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> Flush Staging
           </button>
         </div>
       </div>
 
-      <div id="active-video-container">
+      <div id="active-video-container" class="space-y-4">
         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div class="space-y-1 max-w-3xl">
-            <h3 id="current-video-title" class="text-base font-semibold text-slate-100 truncate">Waiting for next video in queue...</h3>
-            <p class="text-xs text-slate-400 flex items-center gap-2">
-              <span id="current-video-channel" class="font-medium text-slate-300">Channel: —</span>
-              • <span id="current-video-id" class="font-mono text-slate-400">ID: —</span>
-              • <span id="current-video-dur" class="font-mono text-slate-400">Duration: —</span>
+            <h3 id="current-video-title" class="text-base font-bold text-slate-900 truncate">Waiting for next video in batch queue...</h3>
+            <p class="text-xs text-slate-500 flex items-center gap-2">
+              <span id="current-video-channel" class="font-medium text-slate-700">Channel: —</span>
+              • <span id="current-video-id" class="font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">ID: —</span>
+              • <span id="current-video-dur" class="font-mono text-slate-600">Duration: —</span>
             </p>
           </div>
-          <div class="flex items-center gap-4 text-xs font-mono text-slate-300 flex-shrink-0">
-            <div>Speed: <span id="current-video-speed" class="text-emerald-400 font-semibold">0 MB/s</span></div>
-            <div>ETA: <span id="current-video-eta" class="text-amber-400 font-semibold">—</span></div>
+          <div class="flex items-center gap-4 text-xs font-mono text-slate-700 flex-shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+            <div>Speed: <span id="current-video-speed" class="text-emerald-600 font-bold">0 MB/s</span></div>
+            <div>ETA: <span id="current-video-eta" class="text-amber-600 font-bold">—</span></div>
           </div>
         </div>
 
-        <!-- Video Progress Bar -->
-        <div class="mt-4 space-y-1.5">
-          <div class="flex justify-between text-xs font-mono text-slate-400">
-            <span>Download Progress</span>
-            <span id="current-video-pct" class="text-emerald-400 font-bold">0.0%</span>
+        <!-- Working Smooth Progress Bar -->
+        <div class="space-y-1.5">
+          <div class="flex justify-between text-xs font-mono text-slate-600">
+            <span class="font-semibold text-slate-700">Download Progress</span>
+            <span id="current-video-pct" class="text-emerald-700 font-black">0.0%</span>
           </div>
-          <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5">
-            <div id="video-progress-bar" class="bg-gradient-to-r from-emerald-500 to-emerald-400 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+          <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden p-0.5 border border-slate-200 shadow-inner">
+            <div id="video-progress-bar" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Multi-Worker Cluster Mesh Grid -->
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-      <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+    <!-- Parallel Kaggle Nodes Mesh (Multi-Worker Grid) -->
+    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+      <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
         <div>
-          <h2 class="text-base font-bold text-white flex items-center gap-2">
-            <i data-lucide="network" class="w-5 h-5 text-indigo-400"></i>
+          <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+            <i data-lucide="network" class="w-5 h-5 text-indigo-600"></i>
             Parallel Kaggle Nodes Mesh
           </h2>
-          <p class="text-xs text-slate-400">Every parallel 'Save Version' job running across accounts is synchronized here automatically.</p>
+          <p class="text-xs text-slate-500">All parallel 'Save Version' jobs running concurrently across accounts are synchronized here.</p>
         </div>
-        <button onclick="refreshMesh()" class="text-xs text-slate-400 hover:text-white transition flex items-center gap-1 font-mono">
+        <button onclick="refreshMesh()" class="text-xs text-indigo-600 hover:text-indigo-800 transition flex items-center gap-1 font-semibold bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-200 shadow-sm">
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh Mesh
         </button>
       </div>
 
       <!-- Grid of Worker Nodes -->
       <div id="workers-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800 animate-pulse text-xs text-slate-500 text-center">
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center animate-pulse">
           Discovering active peer nodes from Hugging Face Bucket...
         </div>
       </div>
     </div>
 
     <!-- YouTube Channel Management Suite -->
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
+    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
         <div>
-          <h2 class="text-base font-bold text-white flex items-center gap-2">
-            <i data-lucide="youtube" class="w-5 h-5 text-red-500"></i>
+          <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+            <i data-lucide="youtube" class="w-5 h-5 text-red-600"></i>
             Channel Queue Manager
           </h2>
-          <p class="text-xs text-slate-400">Added channels are saved directly to <code class="text-brand-500 font-mono">channels.json</code> in the bucket and downloaded across all running instances.</p>
+          <p class="text-xs text-slate-500">Added channels are saved directly to <code class="text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200 font-mono font-medium">channels.json</code> in the bucket and divided across all running instances.</p>
         </div>
       </div>
 
@@ -241,28 +235,28 @@
           type="text" 
           placeholder="Paste YouTube Channel URL or @handle (e.g. @madangowri/videos or https://youtube.com/@TamilPokkisham)" 
           required
-          class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-brand-500 transition"
+          class="flex-1 bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition shadow-sm"
         >
         <button 
           type="submit" 
-          class="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 shadow-lg shadow-brand-600/20"
+          class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 shadow-sm"
         >
           <i data-lucide="plus" class="w-4 h-4"></i> Add Channel to Queue
         </button>
       </form>
 
       <!-- Channels Table -->
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto rounded-xl border border-slate-200">
         <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/60 text-slate-400 uppercase font-mono border-b border-slate-800">
+          <thead class="bg-slate-50 text-slate-600 uppercase font-mono border-b border-slate-200 font-semibold">
             <tr>
               <th class="p-3">Channel Name</th>
               <th class="p-3">URL</th>
               <th class="p-3">Status</th>
-              <th class="p-3 text-right">Actions</th>
+              <th class="p-3 text-right">Added</th>
             </tr>
           </thead>
-          <tbody id="channels-table-body" class="divide-y divide-slate-800">
+          <tbody id="channels-table-body" class="divide-y divide-slate-100">
             <tr>
               <td colspan="4" class="p-4 text-center text-slate-500">Loading channels...</td>
             </tr>
@@ -292,8 +286,10 @@
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        updateDashboard(data);
+        try {
+          const data = JSON.parse(event.data);
+          updateDashboard(data);
+        } catch(e) {}
       };
 
       ws.onclose = () => {
@@ -301,7 +297,7 @@
         setTimeout(connectTelemetry, 2000);
       };
 
-      ws.onerror = (err) => {
+      ws.onerror = () => {
         ws.close();
       };
     }
@@ -334,11 +330,11 @@
         const diskBar = document.getElementById("disk-progress-bar");
         diskBar.style.width = `${diskPct}%`;
         if (data.disk.used_gb >= 13.0) {
-          diskBar.className = "bg-red-500 h-2 rounded-full transition-all duration-500";
+          diskBar.className = "bg-red-500 h-1.5 rounded-full transition-all duration-500";
         } else if (data.disk.used_gb >= 10.0) {
-          diskBar.className = "bg-amber-500 h-2 rounded-full transition-all duration-500";
+          diskBar.className = "bg-amber-500 h-1.5 rounded-full transition-all duration-500";
         } else {
-          diskBar.className = "bg-purple-500 h-2 rounded-full transition-all duration-500";
+          diskBar.className = "bg-purple-600 h-1.5 rounded-full transition-all duration-500";
         }
       }
 
@@ -349,7 +345,8 @@
         document.getElementById("current-video-title").textContent = curVid.title;
         document.getElementById("current-video-channel").textContent = `Channel: ${curVid.channel || '—'}`;
         document.getElementById("current-video-id").textContent = `ID: ${curVid.id || '—'}`;
-        document.getElementById("current-video-dur").textContent = `Duration: ${(curVid.duration_seconds/60).toFixed(1)} mins`;
+        const durMin = curVid.duration_seconds ? (curVid.duration_seconds/60).toFixed(1) : '—';
+        document.getElementById("current-video-dur").textContent = `Duration: ${durMin} mins`;
         document.getElementById("current-video-speed").textContent = curVid.speed || data.speed || "0 MB/s";
         document.getElementById("current-video-eta").textContent = curVid.eta || "—";
         const pct = curVid.progress || 0.0;
@@ -371,7 +368,7 @@
         document.getElementById("active-nodes-badge").textContent = `${workers.length} Active Node${workers.length === 1 ? '' : 's'}`;
 
         if (!workers || workers.length === 0) {
-          grid.innerHTML = `<div class="col-span-full p-4 rounded-xl bg-slate-950/60 border border-slate-800 text-xs text-slate-500 text-center">No other peer nodes detected. Start another Kaggle 'Save Version' job to automatically scale!</div>`;
+          grid.innerHTML = `<div class="col-span-full p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">No other peer nodes detected. Start another Kaggle 'Save Version' job to automatically scale!</div>`;
           return;
         }
 
@@ -379,26 +376,27 @@
           const isThis = w.worker_id === currentWorkerId;
           const diskUsed = w.disk ? w.disk.used_gb : 0;
           const cur = w.current_video || {};
+          const isAlive = w.is_alive !== false;
           return `
-            <div class="p-4 rounded-xl bg-slate-950/80 border ${isThis ? 'border-brand-500/50 ring-1 ring-brand-500/20' : 'border-slate-800'} space-y-3">
+            <div class="p-4 rounded-xl bg-white border ${isThis ? 'border-emerald-500 ring-2 ring-emerald-500/10' : 'border-slate-200'} space-y-3 shadow-sm">
               <div class="flex items-center justify-between">
-                <span class="font-mono font-bold text-xs ${isThis ? 'text-brand-400' : 'text-slate-200'} flex items-center gap-1.5">
+                <span class="font-mono font-bold text-xs ${isThis ? 'text-emerald-700' : 'text-slate-800'} flex items-center gap-1.5">
                   ${isThis ? '⭐' : '🖥️'} ${w.worker_id}
                 </span>
-                <span class="text-[10px] px-2 py-0.5 rounded-full ${w.status === 'downloading' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'} font-medium uppercase font-mono">
-                  ${w.status || 'active'}
+                <span class="text-[10px] px-2 py-0.5 rounded-full ${isAlive ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500 border border-slate-200'} font-semibold uppercase font-mono">
+                  ${isAlive ? (w.status || 'active') : 'offline'}
                 </span>
               </div>
               <div class="space-y-1">
-                <p class="text-xs text-slate-300 truncate font-medium">${cur.title || 'Idle / Waiting for batch'}</p>
+                <p class="text-xs text-slate-800 truncate font-semibold">${cur.title || 'Idle / Waiting for batch'}</p>
                 <div class="flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                  <span>Speed: <strong class="text-slate-300">${w.speed || '0 MB/s'}</strong></span>
-                  <span>Disk: <strong class="text-purple-400">${diskUsed}GB</strong> / 19.5GB</span>
+                  <span>Speed: <strong class="text-slate-800">${w.speed || '0 MB/s'}</strong></span>
+                  <span>Disk: <strong class="text-purple-700">${diskUsed}GB</strong> / 19.5GB</span>
                 </div>
               </div>
-              <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                ${w.tunnel_url ? `<a href="${w.tunnel_url}" target="_blank" class="text-blue-400 hover:underline flex items-center gap-1 text-[11px] font-mono">Direct Tunnel <i data-lucide="external-link" class="w-3 h-3"></i></a>` : '<span class="text-slate-600 text-[11px]">Local Host</span>'}
-                <button onclick="controlNode('${w.worker_id}', 'flush')" class="text-indigo-400 hover:text-indigo-300 font-medium text-[11px]">Flush Node</button>
+              <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                ${w.tunnel_url ? `<a href="${w.tunnel_url}" target="_blank" class="text-indigo-600 hover:underline flex items-center gap-1 text-[11px] font-mono font-semibold">Direct Tunnel <i data-lucide="external-link" class="w-3 h-3"></i></a>` : '<span class="text-slate-400 text-[11px]">Local Host</span>'}
+                <button onclick="controlNode('${w.worker_id}', 'flush')" class="text-emerald-700 hover:text-emerald-800 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Flush Node</button>
               </div>
             </div>
           `;
@@ -420,16 +418,16 @@
           return;
         }
         tbody.innerHTML = channels.map(ch => `
-          <tr class="hover:bg-slate-800/40 transition">
-            <td class="p-3 font-semibold text-slate-200">${ch.name || ch.id}</td>
-            <td class="p-3 font-mono text-slate-400"><a href="${ch.url}" target="_blank" class="hover:text-blue-400 truncate max-w-xs block">${ch.url}</a></td>
+          <tr class="hover:bg-slate-50 transition">
+            <td class="p-3 font-semibold text-slate-800">${ch.name || ch.id}</td>
+            <td class="p-3 font-mono text-slate-600"><a href="${ch.url}" target="_blank" class="hover:text-indigo-600 truncate max-w-xs block">${ch.url}</a></td>
             <td class="p-3">
-              <span class="px-2 py-0.5 rounded text-[10px] font-mono ${ch.active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}">
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ${ch.active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500'}">
                 ${ch.active ? 'Active' : 'Paused'}
               </span>
             </td>
             <td class="p-3 text-right">
-              <span class="text-slate-500 text-[11px] font-mono">${ch.added_at || 'Default'}</span>
+              <span class="text-slate-400 text-[11px] font-mono">${ch.added_at || 'Default'}</span>
             </td>
           </tr>
         `).join('');
@@ -510,7 +508,7 @@
     connectTelemetry();
     loadChannels();
     refreshMesh();
-    setInterval(refreshMesh, 10000);
+    setInterval(refreshMesh, 8000);
   </script>
 </body>
 </html>

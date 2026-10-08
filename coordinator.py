@@ -2,6 +2,7 @@ import json
 import time
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from huggingface_hub import HfApi
@@ -18,6 +19,7 @@ class ClusterCoordinator:
         self.node_id = node_id
         self.manifest_cache = {"completed": {}, "total_hours": 0.0, "last_updated": ""}
         self.channels_cache = []
+        self._lock = threading.Lock()
         self._ensure_bucket_ready()
 
     def _ensure_bucket_ready(self):
@@ -118,7 +120,6 @@ class ClusterCoordinator:
             else:
                 norm_url = f"https://www.youtube.com/@{norm_url}/videos"
         
-        # Check if already in list
         for ch in channels:
             if ch.get("url") == norm_url:
                 return False
@@ -144,13 +145,11 @@ class ClusterCoordinator:
         self.load_manifest()
         completed_ids = set(self.manifest_cache.get("completed", {}).keys())
         
-        # Fetch active leases
         leased_ids = set()
         try:
             tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
             lease_files = [it.path for it in tree if it.path.startswith("batches/") and it.path.endswith("_lease.json")]
             for l_path in lease_files:
-                # If this node's own lease, release it first
                 if l_path == f"batches/{self.node_id}_lease.json":
                     continue
                 with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
@@ -169,7 +168,7 @@ class ClusterCoordinator:
         except Exception as e:
             print(f"[COORDINATOR] Warning inspecting leases: {e}")
 
-        # Pick candidate videos that are neither completed nor currently leased
+        # Pick videos not completed and not leased
         selected = []
         for vid in candidate_videos:
             v_id = vid["id"]
@@ -215,7 +214,7 @@ class ClusterCoordinator:
 
     # --- HEARTBEAT & WORKER MESH ---
     def update_heartbeat(self, status: str, current_video: Optional[Dict[str, Any]] = None, tunnel_url: str = "", speed_str: str = "", batch_info: str = ""):
-        """Register worker heartbeat in the bucket."""
+        """Register worker heartbeat in the bucket (Thread-Safe)."""
         now = time.time()
         disk_usage = shutil.disk_usage(config.WORKING_DIR)
         used_gb = round(disk_usage.used / (1024**3), 2)
@@ -239,18 +238,23 @@ class ClusterCoordinator:
             json.dump(hb_payload, tmp, indent=2)
             tmp_path = Path(tmp.name)
         try:
-            self.api.batch_bucket_files(
-                bucket_id=self.bucket_id,
-                add=[(tmp_path, f"workers/{self.node_id}.json")]
-            )
-        except Exception:
+            with self._lock:
+                self.api.batch_bucket_files(
+                    bucket_id=self.bucket_id,
+                    add=[(tmp_path, f"workers/{self.node_id}.json")]
+                )
+        except Exception as e:
+            # Don't let transient network blips crash the heartbeat
             pass
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
 
     def list_active_workers(self) -> List[Dict[str, Any]]:
-        """List all active peer workers in the cluster."""
+        """
+        List all active peer workers in the cluster.
+        SAFE: Never deletes peer workers on short blips; marks inactive if >90s.
+        """
         now = time.time()
         active_workers = []
         try:
@@ -264,17 +268,25 @@ class ClusterCoordinator:
                     with open(t_path, "r", encoding="utf-8") as f:
                         w_data = json.load(f)
                     
-                    # Consider worker active if heartbeat is within threshold
-                    if now - w_data.get("last_heartbeat", 0) <= config.WORKER_OFFLINE_THRESHOLD_SEC:
+                    time_since_hb = now - w_data.get("last_heartbeat", 0)
+                    
+                    # If within 90s, active!
+                    if time_since_hb <= config.WORKER_OFFLINE_THRESHOLD_SEC:
+                        w_data["is_alive"] = True
                         active_workers.append(w_data)
-                    else:
-                        # Auto-clean stale worker records
+                    # If older than 20 mins, clean up stale artifact
+                    elif time_since_hb > config.STALE_PRUNE_THRESHOLD_SEC:
                         w_id = w_data.get("worker_id")
-                        if w_id:
+                        if w_id and w_id != self.node_id:
                             try:
                                 self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=[path, f"batches/{w_id}_lease.json"])
                             except Exception:
                                 pass
+                    else:
+                        # Stale but not yet purged (show as disconnected)
+                        w_data["is_alive"] = False
+                        w_data["status"] = "offline"
+                        active_workers.append(w_data)
                 except Exception:
                     pass
                 finally:
@@ -282,6 +294,20 @@ class ClusterCoordinator:
                         t_path.unlink()
         except Exception as e:
             print(f"[COORDINATOR] Warning reading workers: {e}")
+            
+        # Ensure self is always present if alive
+        self_present = any(w.get("worker_id") == self.node_id for w in active_workers)
+        if not self_present:
+            active_workers.append({
+                "worker_id": self.node_id,
+                "status": "online",
+                "tunnel_url": "",
+                "speed": "Active",
+                "disk": {"used_gb": 0.0, "free_gb": 19.5, "percent": 0.0},
+                "last_heartbeat": now,
+                "is_alive": True
+            })
+
         return active_workers
 
     # --- CLUSTER REMOTE COMMANDS ---
@@ -310,9 +336,7 @@ class ClusterCoordinator:
                     self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(c_name, t_path)])
                     with open(t_path, "r", encoding="utf-8") as f:
                         cmd = json.load(f)
-                    # If command is recent (within 60s)
                     if time.time() - cmd.get("timestamp", 0) < 60:
-                        # Clear command after reading if node-specific
                         if c_name.startswith(f"commands/{self.node_id}"):
                             self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=[c_name])
                         return cmd.get("action")

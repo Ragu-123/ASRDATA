@@ -53,8 +53,15 @@ class CloudflareTunnel:
             print("[TUNNEL] Error: cloudflared binary not available.", file=sys.stderr)
             return ""
 
+        # Terminate any stray cloudflared processes on this machine/container
+        try:
+            if not sys.platform.startswith("win"):
+                subprocess.run(["pkill", "-9", "-f", "cloudflared"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
         cmd = [str(self._bin_path), "tunnel", "--url", f"http://127.0.0.1:{self.port}", "--no-autoupdate"]
-        print(f"[TUNNEL] Launching Cloudflare Tunnel for port {self.port}...")
+        print(f"[TUNNEL] Launching Cloudflare Tunnel for port {self.port} on {config.NODE_ID}...")
 
         self.process = subprocess.Popen(
             cmd,
@@ -64,22 +71,19 @@ class CloudflareTunnel:
             bufsize=1
         )
 
-        # Thread to scan stderr for trycloudflare.com URL
         url_event = threading.Event()
 
         def scan_output():
             pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
-            # cloudflared logs output to stderr
             for line in iter(self.process.stderr.readline, ''):
                 match = pattern.search(line)
                 if match and not self.url:
                     self.url = match.group(0)
                     url_event.set()
                     print(f"\n========================================================")
-                    print(f"🚀 CLOUDFLARE PUBLIC TUNNEL LIVE:")
+                    print(f"🚀 CLOUDFLARE PUBLIC TUNNEL LIVE FOR [{config.NODE_ID}]:")
                     print(f"👉 {self.url}")
                     print(f"========================================================\n")
-                    # Save to local file
                     try:
                         with open(config.WORKING_DIR / "tunnel_url.txt", "w") as f:
                             f.write(self.url)
@@ -91,8 +95,8 @@ class CloudflareTunnel:
         t = threading.Thread(target=scan_output, daemon=True)
         t.start()
 
-        # Wait up to 30 seconds for URL
-        url_event.wait(timeout=30)
+        # Wait up to 35 seconds for URL
+        url_event.wait(timeout=35)
         return self.url
 
     def stop(self):
