@@ -13,7 +13,7 @@ class ClusterCoordinator:
     """
     Decentralized task coordinator using Hugging Face Storage Bucket.
     Manages atomic batch leases, active worker heartbeats, centralized channel catalogs,
-    and cluster-wide telemetry synchronization.
+    and cluster-wide telemetry synchronization without peer deletion races.
     """
     def __init__(self, api: HfApi, bucket_id: str, node_id: str):
         self.api = api
@@ -28,8 +28,54 @@ class ClusterCoordinator:
     def _ensure_bucket_ready(self):
         try:
             self.api.create_bucket(bucket_id=self.bucket_id, private=False, exist_ok=True)
+            self.purge_stale_records()
         except Exception as e:
             print(f"[COORDINATOR] Bucket ensure notice: {e}")
+
+    def purge_stale_records(self):
+        """Purge truly abandoned records (>15 mins old) once on startup."""
+        now = time.time()
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            stale_files = []
+            for item in tree:
+                if item.path.startswith("workers/") and item.path.endswith(".json"):
+                    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                        t_path = Path(tmp.name)
+                    try:
+                        self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(item.path, t_path)])
+                        with open(t_path, "r", encoding="utf-8") as f:
+                            w = json.load(f)
+                        if now - w.get("last_heartbeat", 0) > config.STALE_PRUNE_THRESHOLD_SEC:
+                            w_id = w.get("worker_id")
+                            stale_files.append(item.path)
+                            if w_id:
+                                stale_files.append(f"batches/{w_id}_lease.json")
+                    except Exception:
+                        pass
+                    finally:
+                        if t_path.exists():
+                            t_path.unlink()
+
+            if stale_files:
+                existing_stale = [p for p in stale_files if any(it.path == p for it in tree)]
+                if existing_stale:
+                    self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=existing_stale)
+                    print(f"[COORDINATOR] Startup cleanup: purged {len(existing_stale)} stale artifacts.")
+        except Exception as e:
+            print(f"[COORDINATOR] Stale purge notice: {e}")
+
+    def deregister_worker(self):
+        """Clean self-deregistration when this node is stopped or shut down."""
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            paths = {it.path for it in tree}
+            to_delete = [p for p in [f"workers/{self.node_id}.json", f"batches/{self.node_id}_lease.json"] if p in paths]
+            if to_delete:
+                self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=to_delete)
+                print(f"[COORDINATOR] Cleanly deregistered node {self.node_id}.")
+        except Exception:
+            pass
 
     # --- MANIFEST OPERATIONS ---
     def load_manifest(self) -> Dict[str, Any]:
@@ -139,12 +185,11 @@ class ClusterCoordinator:
         return True
 
     # --- CENTRALIZED METADATA CATALOG ---
-    def get_channel_catalog(self, channel: Dict[str, Any], needed_uncompleted: int = 120) -> List[Dict[str, Any]]:
+    def get_channel_catalog(self, channel: Dict[str, Any], needed_uncompleted: int = 150) -> List[Dict[str, Any]]:
         """
         Retrieves or expands the channel's video catalog.
         - First loads from the bucket (sub-second, shared across all nodes).
-        - If uncompleted candidates < needed_uncompleted, fetches the next metadata slice via yt-dlp
-          and saves back to bucket so peer nodes don't repeat the extraction.
+        - If uncompleted candidates < needed_uncompleted, expands metadata via yt-dlp slice.
         """
         ch_id = channel["id"]
         ch_url = channel["url"]
@@ -173,11 +218,11 @@ class ClusterCoordinator:
         completed_ids = set(self.manifest_cache.get("completed", {}).keys())
         uncompleted = [v for v in catalog if v.get("id") not in completed_ids]
 
-        # 3. If uncompleted count is lower than needed, expand metadata via yt-dlp slice
-        if len(uncompleted) < needed_uncompleted:
+        # 3. If uncompleted count is lower than needed, expand metadata
+        if len(uncompleted) < needed_uncompleted and len(catalog) < 3500:
             start_idx = len(catalog) + 1
-            chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 2)
-            end_idx = len(catalog) + chunk_size
+            chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 3)
+            end_idx = min(3500, len(catalog) + chunk_size)
             print(f"[COORDINATOR] Expanding catalog for {channel.get('name', ch_id)}: fetching items {start_idx} to {end_idx}...")
 
             try:
@@ -237,20 +282,19 @@ class ClusterCoordinator:
         """
         Dynamically calculates active node count, expands metadata buffer if needed,
         and atomically leases a non-overlapping batch for this node.
-        Cleans expired or dead-node leases immediately so candidate videos are never locked.
         """
         now = time.time()
         self.load_manifest()
         completed_ids = set(self.manifest_cache.get("completed", {}).keys())
 
-        # Determine active nodes count to scale metadata fetch buffer
+        # Determine active nodes count
         active_nodes = self.list_active_workers()
         live_workers = [w for w in active_nodes if w.get("is_alive", True)]
         live_node_ids = {w["worker_id"] for w in live_workers}
         live_node_count = max(1, len(live_workers))
         needed_buffer = live_node_count * batch_size * 2
 
-        # 1. Read existing active leases from peer nodes & immediately release dead/expired leases
+        # 1. Read existing active leases from peer nodes
         leased_ids = set()
         expired_files_to_delete = []
         try:
@@ -271,7 +315,6 @@ class ClusterCoordinator:
                     is_dead_worker = l_worker not in live_node_ids
 
                     if is_expired or is_dead_worker:
-                        # Dead worker or expired lease -> mark for immediate deletion & release videos!
                         expired_files_to_delete.append(l_path)
                     else:
                         leased_ids.update(lease_data.get("video_ids", []))
@@ -281,11 +324,10 @@ class ClusterCoordinator:
                     if t_path.exists():
                         t_path.unlink()
 
-            # Clean dead/expired lease files in bucket immediately
+            # Clean dead/expired lease files safely
             if expired_files_to_delete:
                 try:
                     self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=expired_files_to_delete)
-                    print(f"[COORDINATOR] Cleaned {len(expired_files_to_delete)} stale/dead leases from bucket.")
                 except Exception:
                     pass
         except Exception as e:
@@ -303,7 +345,7 @@ class ClusterCoordinator:
                 v_id = vid["id"]
                 if v_id not in completed_ids and v_id not in leased_ids:
                     selected.append(vid)
-                    leased_ids.add(v_id) # Prevent duplicate assignment in this batch
+                    leased_ids.add(v_id)
                     if len(selected) >= batch_size:
                         break
             if len(selected) >= batch_size:
@@ -362,7 +404,6 @@ class ClusterCoordinator:
         total_gb = round(disk_usage.total / (1024**3), 2)
         free_gb = round(disk_usage.free / (1024**3), 2)
 
-        # Primary current video for legacy consumers
         primary_video = active_streams[0] if active_streams else {}
 
         hb_payload = {
@@ -400,13 +441,11 @@ class ClusterCoordinator:
 
     def list_active_workers(self) -> List[Dict[str, Any]]:
         """
-        List all active peer workers in the cluster.
-        IMMEDIATELY deletes and purges any offline workers from the bucket (older than 30s)
-        so ghost/offline cards never remain and their leases are freed immediately.
+        List all active peer workers in the cluster (READ-ONLY).
+        Never triggers aggressive delete operations on short blips.
         """
         now = time.time()
         active_workers = []
-        dead_files_to_delete = []
 
         try:
             tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
@@ -424,31 +463,16 @@ class ClusterCoordinator:
                     if time_since_hb <= config.WORKER_OFFLINE_THRESHOLD_SEC:
                         w_data["is_alive"] = True
                         active_workers.append(w_data)
-                    else:
-                        # NODE IS OFFLINE -> Mark for immediate deletion from bucket!
-                        w_id = w_data.get("worker_id")
-                        if w_id and w_id != self.node_id:
-                            dead_files_to_delete.extend([
-                                path,
-                                f"batches/{w_id}_lease.json",
-                                f"commands/{w_id}.json"
-                            ])
+                    elif time_since_hb <= config.STALE_PRUNE_THRESHOLD_SEC:
+                        # Inactive but not purged yet -> mark offline
+                        w_data["is_alive"] = False
+                        w_data["status"] = "offline"
+                        active_workers.append(w_data)
                 except Exception:
                     pass
                 finally:
                     if t_path.exists():
                         t_path.unlink()
-
-            # Execute batch deletion of dead workers & their leases
-            if dead_files_to_delete:
-                try:
-                    # Filter existing files before delete
-                    existing_dead = [p for p in dead_files_to_delete if any(it.path == p for it in tree)]
-                    if existing_dead:
-                        self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=existing_dead)
-                        print(f"[COORDINATOR] Purged {len(existing_dead)} offline worker files from bucket.")
-                except Exception as e:
-                    print(f"[COORDINATOR] Notice purging offline files: {e}")
 
         except Exception as e:
             print(f"[COORDINATOR] Warning reading workers: {e}")

@@ -62,6 +62,7 @@ def main():
     def shutdown_handler(signum, frame):
         print("\n[SHUTDOWN] Signal received. Gracefully flushing and releasing lease...")
         worker.stop()
+        coordinator.deregister_worker()
         tunnel.stop()
         sys.exit(0)
 
@@ -81,6 +82,7 @@ def main():
         pass
     finally:
         worker.stop()
+        coordinator.deregister_worker()
         tunnel.stop()
 
 if __name__ == "__main__":

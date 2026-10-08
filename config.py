@@ -20,11 +20,12 @@ CLOUDFLARED_BIN = WORKING_DIR / "cloudflared"
 DISK_PER_NODE_GB = 19.5
 DISK_THRESHOLD_GB = float(os.getenv("DISK_THRESHOLD_GB", "14.0"))
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "30"))
-LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "20"))
+LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "45"))
 
-# Heartbeat & Mesh Timing (Fast offline pruning)
+# Heartbeat & Mesh Timing
 HEARTBEAT_INTERVAL_SEC = 6               # Heartbeat frequency (daemon thread)
-WORKER_OFFLINE_THRESHOLD_SEC = 30        # Immediately purge offline workers after 30s
+WORKER_OFFLINE_THRESHOLD_SEC = 90        # Mark offline after 90s without heartbeat
+STALE_PRUNE_THRESHOLD_SEC = 900          # Prune from bucket on boot if > 15 mins inactive
 
 # Stream Concurrency per Node
 CONCURRENT_DOWNLOADS_PER_NODE = 2        # 2 concurrent streams per node to stay within YouTube limits
@@ -36,7 +37,7 @@ PORT = int(os.getenv("PORT", "8000"))
 NODE_ID = os.getenv("WORKER_ID", f"node-{uuid.uuid4().hex[:6]}")
 
 # Metadata Catalog Fetch Chunk Size
-CATALOG_FETCH_CHUNK = 500
+CATALOG_FETCH_CHUNK = 1000
 
 # Default Seed Channels if channels.json is blank
 DEFAULT_CHANNELS = [
