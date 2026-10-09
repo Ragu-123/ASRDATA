@@ -129,9 +129,9 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
 
 def main():
     parser = argparse.ArgumentParser(description="Distributed Tamil ASR Transcriber with Gemini Canvas Proxy")
-    parser.add_argument("--proxy-url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
+    parser.add_argument("--proxy-url", "--url", "--proxy_url", dest="proxy_url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
     parser.add_argument("--concurrency", type=int, default=config.CONCURRENCY, help="Parallel requests to Gemini (default: 4, recommended: 3-5)")
-    parser.add_argument("--batch-size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
+    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
 
     args = parser.parse_args()
 
