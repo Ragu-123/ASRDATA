@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import httpx
+from tqdm import tqdm
 from openai import AsyncOpenAI
 import transcribe.config as config
 from transcribe.rules import SYSTEM_PROMPT, build_user_prompt
@@ -118,7 +119,7 @@ class GeminiAuditor:
                     }
 
                 except Exception as exc:
-                    print(f"[AUDITOR] [{seg_id}] Attempt {attempt} notice: {exc}")
+                    tqdm.write(f"[AUDITOR] [{seg_id}] Attempt {attempt} notice: {exc}")
                     if attempt == max_retries:
                         # Fallback to Whisper draft if Gemini proxy fails after max retries
                         return {
@@ -131,7 +132,29 @@ class GeminiAuditor:
                         }
                     await asyncio.sleep(2 * attempt)
 
-    async def audit_batch(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Audits multiple segments concurrently using the Semaphore (3-5 parallel requests)."""
-        tasks = [self.audit_single_segment(s) for s in segments]
-        return await asyncio.gather(*tasks)
+    async def audit_batch(self, segments: List[Dict[str, Any]], desc: str = "Transcribing clips") -> List[Dict[str, Any]]:
+        """Audits multiple segments concurrently using the Semaphore with real-time tqdm progress bar."""
+        if not segments:
+            return []
+
+        results = [None] * len(segments)
+        pbar = tqdm(total=len(segments), desc=f"🎙️  {desc}", unit="clip", dynamic_ncols=True)
+        ok_count = 0
+        fallback_count = 0
+
+        async def _run_indexed(idx: int, seg: Dict[str, Any]):
+            nonlocal ok_count, fallback_count
+            res = await self.audit_single_segment(seg)
+            results[idx] = res
+            if res.get("status") == "ok":
+                ok_count += 1
+            else:
+                fallback_count += 1
+            pbar.set_postfix({"OK": ok_count, "Fallback": fallback_count})
+            pbar.update(1)
+            return res
+
+        tasks = [_run_indexed(i, s) for i, s in enumerate(segments)]
+        await asyncio.gather(*tasks)
+        pbar.close()
+        return results

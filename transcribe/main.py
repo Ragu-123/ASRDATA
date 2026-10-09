@@ -18,6 +18,7 @@ from transcribe.coordinator import TranscriptionCoordinator
 from transcribe.segmenter import AudioSegmenter
 from transcribe.auditor import GeminiAuditor
 from transcribe.syncer import BucketSyncer
+from transcribe.disk_guard import DiskGuard
 
 def print_banner(proxy_url: str, concurrency: int):
     print("\n" + "="*70)
@@ -41,11 +42,12 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
 
     api = HfApi(token=hf_token)
 
-    # 2. Initialize Coordinator, Segmenter, Auditor, and Syncer
+    # 2. Initialize Coordinator, Segmenter, Auditor, Syncer, and DiskGuard
     coordinator = TranscriptionCoordinator(api=api)
     auditor = GeminiAuditor(proxy_url=proxy_url, concurrency=concurrency)
     segmenter = AudioSegmenter(api=api)
     syncer = BucketSyncer(api=api, coordinator=coordinator)
+    disk_guard = DiskGuard()
 
     # 3. Test Proxy Connectivity
     print("[INIT] Testing connection to Gemini Canvas Proxy...")
@@ -73,6 +75,10 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
 
     # 4. Main Distributed Ingestion & Auditing Loop
     while running:
+        # Check disk space before leasing or downloading
+        disk_guard.print_disk_status()
+        disk_guard.check_and_clean()
+
         print(f"[COORDINATOR] Leasing next batch of up to {batch_size} videos...")
         batch = coordinator.lease_next_batch(batch_size=batch_size)
 
@@ -83,46 +89,65 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
 
         print(f"[COORDINATOR] Successfully leased {len(batch)} video(s): {[v['video_id'] for v in batch]}")
 
+        # --- BATCH STEP 1: Download & Segment All Leased Videos First ---
+        prepared_batch = []
+        print("\n" + "="*70)
+        print(f"📦 [BATCH PREPARATION] Downloading & Slicing {len(batch)} video(s)...")
+        print("="*70)
+
         for vid_meta in batch:
             vid_id = vid_meta["video_id"]
             vid_title = vid_meta.get("title", vid_id)
             source_file = vid_meta.get("file", f"{vid_id}.m4a")
-
-            print(f"\n──────────────────────────────────────────────────────────────────────")
-            print(f"🎬 Processing Video: [{vid_id}] {vid_title}")
-            print(f"──────────────────────────────────────────────────────────────────────")
-
-            # A. Download raw audio from source bucket
             staging_video_dir = config.STAGING_DIR / vid_id
             staging_video_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"[STAGE 0] Downloading audio from {config.SOURCE_BUCKET}...")
+            print(f"\n🎬 Slicing Video [{vid_id}]: {vid_title[:55]}")
             local_raw_audio = segmenter.download_source_audio(source_file, config.STAGING_DIR)
             if not local_raw_audio:
-                print(f"[WARN] Failed to download {source_file}. Skipping.")
+                print(f"  ⚠️ Failed to download {source_file}. Skipping.")
                 continue
 
-            # B. Stage 1: Segment into 5-15s clips with fast silence detection
-            print(f"[STAGE 1] Slicing audio into 5-15s speech chunks with ffmpeg silence detection...")
             segments = segmenter.segment_audio_by_silence(local_raw_audio, vid_id, staging_video_dir)
+            # Instantly purge raw source audio file to conserve disk space!
+            local_raw_audio.unlink(missing_ok=True)
 
             if not segments:
-                print(f"[WARN] No speech segments detected for {vid_id}. Skipping.")
-                local_raw_audio.unlink(missing_ok=True)
+                print(f"  ⚠️ No speech segments detected for {vid_id}. Skipping.")
                 continue
 
-            print(f"[STAGE 1] Generated {len(segments)} speech segments. Starting Stage 2 Gemini Audit...")
+            prepared_batch.append((vid_meta, segments, staging_video_dir))
 
-            # C. Stage 2: Audit with Gemini Canvas Proxy in parallel (3-5 requests)
+        total_clips = sum(len(segs) for _, segs, _ in prepared_batch)
+        print("\n" + "="*70)
+        print(f"✅ [BATCH READY] {len(prepared_batch)} videos prepared ({total_clips} clips total). Calling Gemini...")
+        print("="*70)
+
+        # --- BATCH STEP 2: Transcribe with Gemini & Sync Each to HF Bucket ---
+        for vid_meta, segments, staging_video_dir in prepared_batch:
+            vid_id = vid_meta["video_id"]
+            vid_title = vid_meta.get("title", vid_id)
+
+            print(f"\n──────────────────────────────────────────────────────────────────────")
+            print(f"🎙️  Transcribing Video [{vid_id}]: {vid_title[:55]} ({len(segments)} clips)")
+            print(f"──────────────────────────────────────────────────────────────────────")
+
             t0 = time.time()
-            audited_segments = await auditor.audit_batch(segments)
+            audited_segments = await auditor.audit_batch(
+                segments,
+                desc=f"[{vid_id}] {vid_title[:25]}"
+            )
             elapsed = time.time() - t0
 
             success_count = sum(1 for s in audited_segments if s.get("status") == "ok")
-            print(f"[STAGE 2] Audited {len(audited_segments)} segments in {elapsed:.1f}s ({success_count} Gemini OK)!")
+            print(f"[STAGE 2] Audited {len(audited_segments)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
 
-            # D. Stage 3: Sync to Target Bucket King758/asr-transcripts-01
+            # Stage 3: Sync to Target Bucket King758/asr-transcripts-01
             syncer.sync_video_transcripts(vid_meta, audited_segments, config.STAGING_DIR)
+
+            # Stage 4: Immediately purge video artifacts from disk & verify disk usage
+            DiskGuard.cleanup_video_artifacts(vid_id, config.STAGING_DIR)
+            disk_guard.check_and_clean()
 
         # Release current lease after batch is complete
         coordinator.release_lease()
