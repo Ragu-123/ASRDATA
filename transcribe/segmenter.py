@@ -14,6 +14,22 @@ if str(ROOT_DIR) not in sys.path:
 from huggingface_hub import HfApi
 import transcribe.config as config
 
+# Fix for av>=19 where 'metadata_errors' keyword argument was removed in PyAV
+try:
+    import av
+    _orig_av_open = av.open
+    def _safe_av_open(*args, **kwargs):
+        try:
+            return _orig_av_open(*args, **kwargs)
+        except TypeError as te:
+            if "metadata_errors" in str(te) and "metadata_errors" in kwargs:
+                kwargs.pop("metadata_errors", None)
+                return _orig_av_open(*args, **kwargs)
+            raise
+    av.open = _safe_av_open
+except Exception:
+    pass
+
 class AudioSegmenter:
     """
     Downloads raw YouTube audio from source HF bucket,

@@ -85,13 +85,18 @@ class GeminiAuditor:
         async with self.semaphore:
             for attempt in range(1, max_retries + 1):
                 try:
+                    extra_body_params = {}
+                    if config.THINKING_BUDGET:
+                        extra_body_params["thinking_budget"] = config.THINKING_BUDGET
+
                     resp = await self.client.chat.completions.create(
                         model=self.model,
                         messages=[
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_content}
                         ],
-                        temperature=0.2
+                        temperature=0.2,
+                        extra_body=extra_body_params if extra_body_params else None
                     )
 
                     raw_output = (resp.choices[0].message.content or "").strip()
