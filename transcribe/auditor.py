@@ -3,6 +3,7 @@ import sys
 import json
 import base64
 import asyncio
+import random
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -50,7 +51,7 @@ class GeminiAuditor:
             print(f"[AUDITOR] Connection test failed for {self.proxy_url}: {e}")
             return False
 
-    async def audit_single_segment(self, segment: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+    async def audit_single_segment(self, segment: Dict[str, Any], max_retries: int = 4) -> Dict[str, Any]:
         """
         Transcribes/audits a single 5-15s audio segment with Gemini 3 Flash.
         Strictly applies the 23 Tamil ASR rules.
@@ -119,9 +120,17 @@ class GeminiAuditor:
                     }
 
                 except Exception as exc:
-                    tqdm.write(f"[AUDITOR] [{seg_id}] Attempt {attempt} notice: {exc}")
+                    err_str = str(exc)
+                    is_gateway_err = any(code in err_str for code in ["502", "504", "Bad gateway", "overloaded", "origin_bad_gateway", "Connection error"])
+                    if is_gateway_err:
+                        sleep_sec = min(20.0, 3.5 * attempt + random.uniform(0.5, 2.0))
+                        tqdm.write(f"[AUDITOR] [{seg_id}] Cloudflare/Proxy transient notice (Attempt {attempt}/{max_retries}). Retrying in {sleep_sec:.1f}s...")
+                    else:
+                        sleep_sec = 2.0 * attempt
+                        tqdm.write(f"[AUDITOR] [{seg_id}] Attempt {attempt}/{max_retries} notice: {exc}")
+
                     if attempt == max_retries:
-                        # Fallback to Whisper draft if Gemini proxy fails after max retries
+                        # Fallback if Gemini proxy fails after all retries
                         return {
                             **segment,
                             "audited_text": draft_text,
@@ -130,7 +139,7 @@ class GeminiAuditor:
                             "status": "fallback",
                             "error": str(exc)
                         }
-                    await asyncio.sleep(2 * attempt)
+                    await asyncio.sleep(sleep_sec)
 
     async def audit_batch(self, segments: List[Dict[str, Any]], desc: str = "Transcribing clips") -> List[Dict[str, Any]]:
         """Audits multiple segments concurrently using the Semaphore with real-time tqdm progress bar."""
@@ -144,6 +153,10 @@ class GeminiAuditor:
 
         async def _run_indexed(idx: int, seg: Dict[str, Any]):
             nonlocal ok_count, fallback_count
+            # Stagger startup of initial parallel requests to avoid thundering herd on Cloudflare tunnel
+            if idx < self.concurrency:
+                await asyncio.sleep(idx * 0.25)
+
             res = await self.audit_single_segment(seg)
             results[idx] = res
             if res.get("status") == "ok":

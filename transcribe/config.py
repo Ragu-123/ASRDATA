@@ -20,7 +20,7 @@ MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # Parallel Request Concurrency (Sweet spot: 3 to 5 parallel requests)
 CONCURRENCY = int(os.getenv("CONCURRENCY", "4"))
-THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "16384"))  # 16k reasoning tokens
+THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2048"))  # 2k reasoning tokens (fast & avoids Cloudflare 100s timeout)
 
 # Distributed Lease Controls
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "3"))  # 3 videos per lease
