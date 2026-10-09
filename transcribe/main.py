@@ -102,9 +102,9 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
                 print(f"[WARN] Failed to download {source_file}. Skipping.")
                 continue
 
-            # B. Stage 1: Segment into 5-15s clips with faster-whisper VAD & Tamil draft
-            print(f"[STAGE 1] Segmenting audio into 5-15s speech chunks with VAD...")
-            segments = segmenter.segment_with_whisper_and_vad(local_raw_audio, vid_id, staging_video_dir)
+            # B. Stage 1: Segment into 5-15s clips with fast silence detection
+            print(f"[STAGE 1] Slicing audio into 5-15s speech chunks with ffmpeg silence detection...")
+            segments = segmenter.segment_audio_by_silence(local_raw_audio, vid_id, staging_video_dir)
 
             if not segments:
                 print(f"[WARN] No speech segments detected for {vid_id}. Skipping.")

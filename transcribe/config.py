@@ -32,8 +32,6 @@ VAD_MIN_CHUNK_SEC = float(os.getenv("VAD_MIN_CHUNK_SEC", "4.0"))
 VAD_MAX_CHUNK_SEC = float(os.getenv("VAD_MAX_CHUNK_SEC", "15.0"))
 VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "400"))
 
-# Whisper Pre-transcription (faster-whisper)
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 
 def get_hf_token() -> str:
     """Retrieve Hugging Face token from environment variables or Kaggle Secrets."""

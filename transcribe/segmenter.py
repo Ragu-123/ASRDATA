@@ -1,11 +1,10 @@
 import os
 import sys
 import re
-import json
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -14,31 +13,14 @@ if str(ROOT_DIR) not in sys.path:
 from huggingface_hub import HfApi
 import transcribe.config as config
 
-# Fix for av>=19 where 'metadata_errors' keyword argument was removed in PyAV
-try:
-    import av
-    _orig_av_open = av.open
-    def _safe_av_open(*args, **kwargs):
-        try:
-            return _orig_av_open(*args, **kwargs)
-        except TypeError as te:
-            if "metadata_errors" in str(te) and "metadata_errors" in kwargs:
-                kwargs.pop("metadata_errors", None)
-                return _orig_av_open(*args, **kwargs)
-            raise
-    av.open = _safe_av_open
-except Exception:
-    pass
-
 class AudioSegmenter:
     """
     Downloads raw YouTube audio from source HF bucket,
-    detects speech pauses via VAD / Whisper, and extracts clean 5-15s clips.
+    detects speech pauses via fast ffmpeg silence detection,
+    and extracts clean 5-15s clips for Gemini Canvas Proxy without Whisper.
     """
-    def __init__(self, api: HfApi, whisper_model_name: str = config.WHISPER_MODEL):
+    def __init__(self, api: HfApi):
         self.api = api
-        self.whisper_model_name = whisper_model_name
-        self._whisper_model = None
 
     def download_source_audio(self, filename: str, dest_dir: Path) -> Optional[Path]:
         """Download raw audio file from King758/media-archive-01."""
@@ -55,171 +37,185 @@ class AudioSegmenter:
             print(f"[SEGMENTER] Error downloading {remote_path}: {e}")
         return None
 
-    def _get_whisper_model(self):
-        """Lazy loader for faster-whisper model."""
-        if self._whisper_model is None:
-            try:
-                from faster_whisper import WhisperModel
-                import torch
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                compute_type = "float16" if device == "cuda" else "int8"
-                print(f"[SEGMENTER] Initializing faster-whisper ({self.whisper_model_name}) on {device.upper()} ({compute_type})...")
-                self._whisper_model = WhisperModel(
-                    self.whisper_model_name,
-                    device=device,
-                    compute_type=compute_type
-                )
-            except Exception as e:
-                print(f"[SEGMENTER] faster-whisper not available or failed to load: {e}")
-                self._whisper_model = False
-        return self._whisper_model
-
-    def segment_with_whisper_and_vad(self, audio_path: Path, video_id: str, output_dir: Path) -> List[Dict[str, Any]]:
-        """
-        Stage 1: Uses faster-whisper with native Silero VAD to segment audio at natural pauses
-        and generate initial draft Tamil transcripts simultaneously.
-        """
-        model = self._get_whisper_model()
-        if not model:
-            return self.segment_with_ffmpeg_vad(audio_path, video_id, output_dir)
-
-        print(f"[SEGMENTER] Transcribing & segmenting {audio_path.name} with faster-whisper VAD...")
-        segments_data = []
-
+    def get_audio_duration(self, audio_path: Path) -> float:
+        """Get audio duration in seconds using ffprobe or ffmpeg."""
+        # 1. ffprobe method
         try:
-            # Native VAD filter prevents hallucinations during music/silence and cuts at speech pauses
-            segments_gen, info = model.transcribe(
-                str(audio_path),
-                language="ta",
-                beam_size=3,
-                vad_filter=True,
-                vad_parameters=dict(
-                    min_silence_duration_ms=config.VAD_SILENCE_MS,
-                    speech_pad_ms=250
-                )
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
+            val = float(res.stdout.strip())
+            if val > 0:
+                return val
+        except Exception:
+            pass
 
-            seg_list = list(segments_gen)
-            print(f"[SEGMENTER] Discovered {len(seg_list)} speech segments (Language: {info.language}, Prob: {info.language_probability:.2f})")
+        # 2. ffmpeg banner parse method
+        try:
+            res = subprocess.run(
+                ["ffmpeg", "-i", str(audio_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", res.stderr)
+            if m:
+                hours, mins, secs = int(m.group(1)), int(m.group(2)), float(m.group(3))
+                return hours * 3600 + mins * 60 + secs
+        except Exception:
+            pass
 
-            # Slice and merge short segments into ideal 4s - 15s ranges
-            merged = []
-            cur_start = None
-            cur_end = None
-            cur_text = []
+        return 0.0
 
-            for seg in seg_list:
-                s_start = seg.start
-                s_end = seg.end
-                s_text = seg.text.strip()
-                s_dur = s_end - s_start
-
-                if cur_start is None:
-                    cur_start = s_start
-                    cur_end = s_end
-                    cur_text = [s_text]
-                else:
-                    proposed_dur = s_end - cur_start
-                    if proposed_dur <= config.VAD_MAX_CHUNK_SEC:
-                        cur_end = s_end
-                        cur_text.append(s_text)
-                    else:
-                        merged.append((cur_start, cur_end, " ".join(cur_text)))
-                        cur_start = s_start
-                        cur_end = s_end
-                        cur_text = [s_text]
-
-            if cur_start is not None:
-                merged.append((cur_start, cur_end, " ".join(cur_text)))
-
-            # Export individual sliced audio chunks
-            output_dir.mkdir(parents=True, exist_ok=True)
-            for idx, (st, en, txt) in enumerate(merged, start=1):
-                dur = round(en - st, 2)
-                if dur < 1.0:
-                    continue  # skip tiny blips
-
-                seg_id = f"{video_id}_seg{idx:04d}"
-                chunk_file = output_dir / f"{seg_id}.m4a"
-
-                # Extract audio chunk via ffmpeg stream copy/fast re-encode
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-ss", str(st),
-                    "-to", str(en),
-                    "-i", str(audio_path),
-                    "-vn", "-c:a", "aac", "-b:a", "64k",
-                    str(chunk_file)
-                ]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                if chunk_file.exists() and chunk_file.stat().st_size > 1000:
-                    segments_data.append({
-                        "segment_id": seg_id,
-                        "video_id": video_id,
-                        "index": idx,
-                        "start": round(st, 2),
-                        "end": round(en, 2),
-                        "duration": dur,
-                        "audio_path": chunk_file,
-                        "draft_text": txt
-                    })
-
-        except Exception as e:
-            print(f"[SEGMENTER] Error in Whisper VAD segmentation: {e}")
-            return self.segment_with_ffmpeg_vad(audio_path, video_id, output_dir)
-
-        return segments_data
-
-    def segment_with_ffmpeg_vad(self, audio_path: Path, video_id: str, output_dir: Path) -> List[Dict[str, Any]]:
-        """Fallback silence-detection segmenter using ffmpeg."""
-        print(f"[SEGMENTER] Using ffmpeg silence detection on {audio_path.name}...")
+    def find_silence_pauses(self, audio_path: Path, noise_db: str = "-30dB", min_silence_sec: float = 0.35) -> List[Dict[str, float]]:
+        """
+        Uses ffmpeg silencedetect filter to find natural speech pauses.
+        Returns a list of dicts: [{'start': ..., 'end': ..., 'mid': ...}, ...]
+        """
         cmd = [
             "ffmpeg", "-i", str(audio_path),
-            "-af", "silencedetect=noise=-30dB:d=0.4",
+            "-af", f"silencedetect=noise={noise_db}:d={min_silence_sec}",
             "-f", "null", "-"
         ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        lines = proc.stderr.splitlines()
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        pauses = []
+        current_start = None
 
-        silence_ends = []
-        for line in lines:
-            if "silence_end:" in line:
-                m = re.search(r"silence_end:\s*([0-9.]+)", line)
+        for line in proc.stderr.splitlines():
+            if "silence_start:" in line:
+                m = re.search(r"silence_start:\s*([0-9.]+)", line)
                 if m:
-                    silence_ends.append(float(m.group(1)))
+                    current_start = float(m.group(1))
+            elif "silence_end:" in line:
+                m_end = re.search(r"silence_end:\s*([0-9.]+)", line)
+                if m_end:
+                    s_end = float(m_end.group(1))
+                    s_start = current_start if current_start is not None else max(0.0, s_end - min_silence_sec)
+                    pauses.append({
+                        "start": s_start,
+                        "end": s_end,
+                        "mid": round((s_start + s_end) / 2.0, 3)
+                    })
+                    current_start = None
+        return pauses
+
+    def compute_chunk_boundaries(self, total_duration: float, pauses: List[Dict[str, float]]) -> List[tuple]:
+        """
+        Calculates cut boundaries (start, end) targeting ~8-12 seconds,
+        constrained strictly between VAD_MIN_CHUNK_SEC and VAD_MAX_CHUNK_SEC.
+        """
+        min_sec = config.VAD_MIN_CHUNK_SEC
+        max_sec = config.VAD_MAX_CHUNK_SEC
+        target_sec = 10.0
+
+        if total_duration <= max_sec:
+            return [(0.0, round(total_duration, 2))]
+
+        chunks = []
+        cur_time = 0.0
+
+        while cur_time < total_duration:
+            rem = total_duration - cur_time
+            if rem <= max_sec:
+                if rem >= 2.0:
+                    chunks.append((round(cur_time, 2), round(total_duration, 2)))
+                elif chunks:
+                    # Merge tiny tail into previous chunk
+                    prev_start, _ = chunks[-1]
+                    chunks[-1] = (prev_start, round(total_duration, 2))
+                break
+
+            # Find candidate pauses within [cur_time + min_sec, cur_time + max_sec]
+            earliest_allowed = cur_time + min_sec
+            latest_allowed = cur_time + max_sec
+
+            candidates = [p for p in pauses if earliest_allowed <= p["mid"] <= latest_allowed]
+
+            if candidates:
+                # Pick the pause closest to cur_time + target_sec
+                target_mid = cur_time + target_sec
+                best_pause = min(candidates, key=lambda p: abs(p["mid"] - target_mid))
+                cut_point = best_pause["mid"]
+                chunks.append((round(cur_time, 2), round(cut_point, 2)))
+                cur_time = cut_point
+            else:
+                # No pause found in the window (e.g. continuous fast speech)
+                # Split cleanly at target_sec
+                cut_point = min(cur_time + target_sec, total_duration)
+                chunks.append((round(cur_time, 2), round(cut_point, 2)))
+                cur_time = cut_point
+
+        return chunks
+
+    def segment_audio_by_silence(self, audio_path: Path, video_id: str, output_dir: Path) -> List[Dict[str, Any]]:
+        """
+        Pure silence-based audio segmenter.
+        Scans for natural pauses with ffmpeg and cuts into clean 5-15s clips.
+        Zero Whisper overhead, zero model loading!
+        """
+        total_duration = self.get_audio_duration(audio_path)
+        print(f"[SEGMENTER] Audio duration: {total_duration:.2f}s ({total_duration/60:.1f} mins)")
+
+        if total_duration <= 0.0:
+            print(f"[SEGMENTER] Warning: Unable to determine duration for {audio_path.name}")
+            return []
+
+        # Find speech pauses using ffmpeg silencedetect
+        print(f"[SEGMENTER] Detecting silence pauses with ffmpeg (noise=-30dB)...")
+        pauses = self.find_silence_pauses(audio_path, noise_db="-30dB", min_silence_sec=0.35)
+
+        # If very few pauses detected (e.g. loud music/background), try a more relaxed noise threshold
+        if len(pauses) < (total_duration / 30.0):
+            more_pauses = self.find_silence_pauses(audio_path, noise_db="-25dB", min_silence_sec=0.25)
+            if len(more_pauses) > len(pauses):
+                pauses = more_pauses
+
+        print(f"[SEGMENTER] Detected {len(pauses)} natural pauses. Computing cut boundaries...")
+        boundaries = self.compute_chunk_boundaries(total_duration, pauses)
+        print(f"[SEGMENTER] Generated {len(boundaries)} chunks (~10s each). Slicing audio files in parallel...")
 
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        def _slice_one(idx: int, st: float, en: float) -> Optional[Dict[str, Any]]:
+            dur = round(en - st, 2)
+            seg_id = f"{video_id}_seg{idx:04d}"
+            chunk_file = output_dir / f"{seg_id}.m4a"
+
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", f"{st:.2f}",
+                "-i", str(audio_path),
+                "-t", f"{dur:.2f}",
+                "-vn", "-c:a", "aac", "-b:a", "64k",
+                str(chunk_file)
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if chunk_file.exists() and chunk_file.stat().st_size > 500:
+                return {
+                    "segment_id": seg_id,
+                    "video_id": video_id,
+                    "index": idx,
+                    "start": st,
+                    "end": en,
+                    "duration": dur,
+                    "audio_path": chunk_file,
+                    "draft_text": ""
+                }
+            return None
+
+        # Slice all chunks in parallel using ThreadPoolExecutor
         segments_data = []
-        cur_pos = 0.0
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_slice_one, idx, st, en) for idx, (st, en) in enumerate(boundaries, start=1)]
+            for fut in futures:
+                res = fut.result()
+                if res:
+                    segments_data.append(res)
 
-        for idx, s_end in enumerate(silence_ends, start=1):
-            dur = s_end - cur_pos
-            if dur >= config.VAD_MIN_CHUNK_SEC:
-                chunk_end = s_end
-                seg_id = f"{video_id}_seg{idx:04d}"
-                chunk_file = output_dir / f"{seg_id}.m4a"
-
-                c_cmd = [
-                    "ffmpeg", "-y",
-                    "-ss", str(cur_pos),
-                    "-to", str(chunk_end),
-                    "-i", str(audio_path),
-                    "-vn", "-c:a", "aac", "-b:a", "64k",
-                    str(chunk_file)
-                ]
-                subprocess.run(c_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if chunk_file.exists() and chunk_file.stat().st_size > 1000:
-                    segments_data.append({
-                        "segment_id": seg_id,
-                        "video_id": video_id,
-                        "index": idx,
-                        "start": round(cur_pos, 2),
-                        "end": round(chunk_end, 2),
-                        "duration": round(chunk_end - cur_pos, 2),
-                        "audio_path": chunk_file,
-                        "draft_text": ""
-                    })
-                cur_pos = s_end
-
+        segments_data.sort(key=lambda s: s["index"])
+        print(f"[SEGMENTER] Successfully created {len(segments_data)} audio segments ready for Gemini!")
         return segments_data
+
+    def segment_with_whisper_and_vad(self, audio_path: Path, video_id: str, output_dir: Path) -> List[Dict[str, Any]]:
+        """Alias for backward compatibility - directs to fast silence segmenter."""
+        return self.segment_audio_by_silence(audio_path, video_id, output_dir)
