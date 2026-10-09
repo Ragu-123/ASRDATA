@@ -1,8 +1,14 @@
 import json
 import time
+import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from huggingface_hub import HfApi
 import transcribe.config as config
 

@@ -1,9 +1,15 @@
 import re
+import sys
 import json
 import base64
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 import httpx
 from openai import AsyncOpenAI
 import transcribe.config as config
