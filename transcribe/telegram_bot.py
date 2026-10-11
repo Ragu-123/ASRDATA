@@ -827,15 +827,26 @@ class TelegramClusterBot:
                     v_id = cur_vid.get("id") or cur_vid.get("video_id") or "unspecified"
 
                     diff_sec = now - last_hb
-                    if 600 < diff_sec < 2400 and status not in ["idle", "paused", "offline"]:
+                    if diff_sec > 600 and status not in ["idle", "paused", "offline"]:
                         if w_id not in self._stalled_alerted:
                             self._stalled_alerted.add(w_id)
                             mins = int(diff_sec // 60)
+                            # Automatically purge dead worker artifact and release leases
+                            to_delete = [w_path, f"batches/{w_id}_lease.json", f"segment_leases/{w_id}_lease.json", f"segment_workers/{w_id}.json"]
+                            try:
+                                existing_paths = {it.path for it in tree}
+                                del_targets = [p for p in to_delete if p in existing_paths]
+                                if del_targets:
+                                    self.coordinator.api.batch_bucket_files(bucket_id=bucket, delete=del_targets)
+                                    print(f"[WATCHDOG] 🧹 Cleaned up inactive worker {w_id} (offline >{mins} mins). Released held leases.")
+                            except Exception:
+                                pass
+
                             alert_msg = (
-                                f"🚨 *[STALL ALERT]* Worker `{w_id}` ({stage}) has been inactive for >{mins} mins on `{v_id}`!\n"
-                                f"• *Status*: `{status}`\n"
-                                f"• *Stage*: `{stage}`\n"
-                                f"• *Action*: Check Kaggle session or restart node."
+                                f"ℹ️ *Cluster Inactive Node Purge*\n\n"
+                                f"• *Node*: `{w_id}` ({stage})\n"
+                                f"• *Notice*: Inactive for >{mins} mins (session ended or disconnected).\n"
+                                f"• *Action*: Worker cleanly deregistered; any leased videos released back to queue."
                             )
                             self.send_message(alert_msg)
                     elif diff_sec <= 600:

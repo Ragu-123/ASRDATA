@@ -97,6 +97,42 @@ class SegmentCoordinator:
                 pass
         except Exception as e:
             print(f"[SEGMENT COORDINATOR] Segmented dataset repo check notice: {e}")
+        self.purge_stale_records()
+
+    def purge_stale_records(self):
+        """Purge abandoned worker records (>10 mins old) once on startup."""
+        now = time.time()
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.tracking_bucket))
+            stale_files = []
+            for item in tree:
+                if (item.path.startswith("workers/") or item.path.startswith("segment_workers/")) and item.path.endswith(".json"):
+                    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                        t_path = Path(tmp.name)
+                    try:
+                        self.api.download_bucket_files(bucket_id=self.tracking_bucket, files=[(item.path, t_path)])
+                        with open(t_path, "r", encoding="utf-8") as f:
+                            w = json.load(f)
+                        if now - w.get("last_heartbeat", 0) > 600:
+                            w_id = w.get("worker_id")
+                            stale_files.append(item.path)
+                            if w_id:
+                                stale_files.append(f"segment_leases/{w_id}_lease.json")
+                                stale_files.append(f"batches/{w_id}_lease.json")
+                    except Exception:
+                        pass
+                    finally:
+                        if t_path.exists():
+                            t_path.unlink()
+
+            if stale_files:
+                tree_paths = {it.path for it in tree}
+                existing_stale = [p for p in stale_files if p in tree_paths]
+                if existing_stale:
+                    self.api.batch_bucket_files(bucket_id=self.tracking_bucket, delete=existing_stale)
+                    print(f"[SEGMENT COORDINATOR] Startup cleanup: purged {len(existing_stale)} stale worker artifacts.")
+        except Exception as e:
+            print(f"[SEGMENT COORDINATOR] Stale purge notice: {e}")
 
     # --- MANIFEST OPERATIONS ---
     def load_manifest(self, force: bool = False) -> Dict[str, Any]:

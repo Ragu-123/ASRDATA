@@ -279,7 +279,7 @@ class IngestionWorker:
             if shutil.which("aria2c"):
                 ydl_opts["external_downloader"] = {"default": "aria2c"}
                 ydl_opts["external_downloader_args"] = {
-                    "aria2c": ["-s", "8", "-x", "8", "-k", "1M", "-j", "8"]
+                    "aria2c": ["-s", "4", "-x", "4", "-k", "1M", "-j", "4"]
                 }
 
             with self._lock:
@@ -399,10 +399,10 @@ class IngestionWorker:
                     time.sleep(12)
                 if self.telegram_bot:
                     try:
-                        self.telegram_bot.send_error_alert(
+                        self.telegram_bot.send_warning_alert(
                             worker_id=config.NODE_ID,
                             video_id=vid_id,
-                            error_msg=f"Download failed: {err_str}"
+                            warning_msg=f"Download failed: {err_str}"
                         )
                     except Exception:
                         pass
