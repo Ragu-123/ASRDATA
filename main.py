@@ -151,6 +151,7 @@ def main():
                 coordinator=coordinator
             )
             telegram_bot.start_background_thread()
+            env_str = "Kaggle" if config.IS_KAGGLE else "Local Cluster"
             cookie_label = f"Active (`{Path(config.COOKIE_FILE).name}`)" if getattr(config, "COOKIE_FILE", None) else "None"
             telegram_bot.send_message(
                 f"🚀 *Worker `{config.NODE_ID}` started (Stage 1: Raw Ingest - `main.py`) on {env_str}!*\n\n"
