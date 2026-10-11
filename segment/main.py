@@ -205,9 +205,16 @@ def main():
     parser.add_argument("--dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Target Hugging Face Dataset for segmented shards (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 5)")
     parser.add_argument("--shard-threshold", "--threshold", dest="shard_threshold", type=int, default=config.SHARD_CLIP_THRESHOLD, help="Clips per Parquet shard (default: 400, ~70 MB)")
+    parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    parser.add_argument("--cookies", "--cookie", "--cookie-file", dest="cookies", nargs="*", default=[], help="Path to YouTube cookies.txt file")
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
     args, unknown = parser.parse_known_args()
+
+    # Process cookies if provided
+    if args.cookies:
+        raw_cookie_str = " ".join(args.cookies) if isinstance(args.cookies, list) else str(args.cookies)
+        config.set_cookie_file(raw_cookie_str)
 
     leftovers = list(args.extra_args) + list(unknown)
     if leftovers:
@@ -222,7 +229,7 @@ def main():
         dataset_repo=args.dataset,
         batch_size=args.batch_size,
         shard_threshold=args.shard_threshold,
-        run_once=args.once
+        run_once=bool(getattr(args, "once", False))
     )
 
 if __name__ == "__main__":

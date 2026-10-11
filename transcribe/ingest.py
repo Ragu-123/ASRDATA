@@ -96,8 +96,8 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                 return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
         except Exception as dl_err:
             err_msg = str(dl_err)
-            if "aria2c" in err_msg.lower() or "external downloader" in err_msg.lower() or "code 22" in err_msg.lower():
-                print(f"[INGEST] ⚠️ aria2c failed on {video_id}. Retrying with native yt-dlp downloader...")
+            if any(term in err_msg.lower() for term in ["aria2c", "external downloader", "code 22", "code 29", "exited with code"]):
+                print(f"[INGEST] ⚠️ aria2c notice on {video_id}. Retrying with native yt-dlp downloader...")
                 native_opts = dict(current_opts)
                 native_opts.pop("external_downloader", None)
                 native_opts.pop("external_downloader_args", None)

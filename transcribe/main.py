@@ -324,9 +324,16 @@ def main():
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
     parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
+    parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    parser.add_argument("--cookies", "--cookie", "--cookie-file", dest="cookies", nargs="*", default=[], help="Path to YouTube cookies.txt file")
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
     args, unknown = parser.parse_known_args()
+
+    # Process cookies if provided
+    if args.cookies:
+        raw_cookie_str = " ".join(args.cookies) if isinstance(args.cookies, list) else str(args.cookies)
+        config.set_cookie_file(raw_cookie_str)
 
     leftovers = list(args.extra_args) + list(unknown)
     if leftovers and not args.proxy_url:

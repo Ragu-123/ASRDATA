@@ -299,9 +299,9 @@ class IngestionWorker:
                         return ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
                 except Exception as dl_err:
                     err_msg = str(dl_err)
-                    # 1. aria2c exit code 22 / external downloader failure: fallback to native yt-dlp downloader
-                    if "aria2c" in err_msg.lower() or "external downloader" in err_msg.lower() or "code 22" in err_msg.lower():
-                        print(f"[WORKER] ⚠️ aria2c failed on {vid_id} ({err_msg[:60]}...). Falling back to native yt-dlp downloader...")
+                    # 1. aria2c exit code 22 / 29 / external downloader failure: fallback to native yt-dlp downloader
+                    if any(term in err_msg.lower() for term in ["aria2c", "external downloader", "code 22", "code 29", "exited with code"]):
+                        print(f"[WORKER] ⚠️ aria2c notice on {vid_id} ({err_msg[:60]}...). Falling back to native yt-dlp downloader...")
                         native_opts = dict(current_opts)
                         native_opts.pop("external_downloader", None)
                         native_opts.pop("external_downloader_args", None)

@@ -55,6 +55,7 @@ class TelegramClusterBot:
         # In-memory recent error buffer for /errors command
         self.recent_errors: deque = deque(maxlen=25)
         self._stalled_alerted: set = set()
+        self._alerted_videos: Dict[str, float] = {}
         self._last_watchdog_check: float = 0.0
 
         # Initialize admin identity
@@ -385,15 +386,42 @@ class TelegramClusterBot:
             "error": str(error_msg)
         }
         self.recent_errors.append(entry)
+
+        now = time.time()
+        # Dedup: don't spam repeated alerts for the exact same video within 10 minutes
+        if video_id and video_id in self._alerted_videos and (now - self._alerted_videos[video_id]) < 600:
+            return None
+        if video_id:
+            self._alerted_videos[video_id] = now
+
+        # If it's a non-fatal video skip (e.g. aria2c exit code 29/22, video private, etc.), format as a warning
+        err_lower = str(error_msg).lower()
+        is_transient_skip = any(term in err_lower for term in [
+            "aria2c", "code 29", "code 22", "unavailable", "private", "removed", "not available"
+        ])
+
         tb_block = f"\n\nTraceback:\n`{traceback_str[-350:]}`" if traceback_str else ""
-        msg = (
-            f"❌ *Cluster Error Notice*\n\n"
-            f"• *Node*: `{worker_id}`\n"
-            f"• *Video*: `{video_id}`\n"
-            f"• *Error*: `{str(error_msg)[:250]}`"
-            f"{tb_block}"
-        )
+        if is_transient_skip:
+            msg = (
+                f"⚠️ *Cluster Warning (Video Skipped)*\n\n"
+                f"• *Node*: `{worker_id}`\n"
+                f"• *Video*: `{video_id}`\n"
+                f"• *Reason*: `{str(error_msg)[:250]}`\n"
+                f"• *Action*: Automatic fallback applied; continuing cluster ingestion."
+            )
+        else:
+            msg = (
+                f"❌ *Cluster Error Notice*\n\n"
+                f"• *Node*: `{worker_id}`\n"
+                f"• *Video*: `{video_id}`\n"
+                f"• *Error*: `{str(error_msg)[:250]}`"
+                f"{tb_block}"
+            )
         return self.send_message(text=msg, chat_id=chat_id)
+
+    def send_warning_alert(self, worker_id: str, video_id: str, warning_msg: str, chat_id: Optional[Any] = None):
+        """Send a subdued warning for skipped videos without alarming the user."""
+        return self.send_error_alert(worker_id=worker_id, video_id=video_id, error_msg=warning_msg, chat_id=chat_id)
 
     # --- COMMAND HANDLERS ---
 
