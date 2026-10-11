@@ -275,12 +275,8 @@ class IngestionWorker:
                 'socket_timeout': 30,
                 'retries': 5,
                 'fragment_retries': 5,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
                 'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else config.YTDLP_EXTRACTOR_ARGS,
+                'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', {'ejs': 'github'}),
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
@@ -291,8 +287,8 @@ class IngestionWorker:
 
             if getattr(config, "COOKIE_FILE", None):
                 ydl_opts["cookiefile"] = config.COOKIE_FILE
-
-            if shutil.which("aria2c"):
+            elif shutil.which("aria2c"):
+                # Only use aria2c when unauthenticated; aria2c drops cookies causing error 29 on YouTube CDN
                 ydl_opts["external_downloader"] = {"default": "aria2c"}
                 ydl_opts["external_downloader_args"] = {
                     "aria2c": ["-s", "4", "-x", "4", "-k", "1M", "-j", "4"]

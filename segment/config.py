@@ -131,26 +131,55 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
         return COOKIE_FILE
     return None
 
-_cookie_candidates = [
-    os.getenv("COOKIE_FILE", ""),
-    os.getenv("COOKIES_FILE", ""),
-    "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies (1).txt",
-    "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies.txt",
-    str(WORKING_DIR / "cookies.txt"),
-    str(ROOT_DIR / "cookies.txt")
-]
-for _cp in _cookie_candidates:
-    if _cp and set_cookie_file(_cp):
-        break
+def ensure_deno_installed() -> Optional[str]:
+    """Ensure Deno JS runtime is installed for yt-dlp EJS challenge solving."""
+    deno_in_path = shutil.which("deno")
+    if deno_in_path:
+        return deno_in_path
+    user_deno = Path.home() / ".deno" / "bin" / "deno"
+    if user_deno.exists():
+        bin_dir = str(user_deno.parent)
+        if bin_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
+        return str(user_deno)
+    if sys.platform.startswith("linux") or IS_KAGGLE:
+        try:
+            import subprocess
+            subprocess.run("curl -fsSL https://deno.land/install.sh | sh", shell=True, capture_output=True, timeout=30)
+            if user_deno.exists():
+                bin_dir = str(user_deno.parent)
+                os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
+                return str(user_deno)
+        except Exception:
+            pass
+    return None
 
-if not COOKIE_FILE and os.path.exists("/kaggle/input"):
+DENO_PATH = ensure_deno_installed()
+YTDLP_REMOTE_COMPONENTS = {"ejs": "github"}
+YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
+
+# Prioritize scanning /kaggle/input for the freshest cookies first
+if os.path.exists("/kaggle/input"):
     try:
-        for _f in Path("/kaggle/input").rglob("*cookie*.txt"):
+        for _f in sorted(Path("/kaggle/input").rglob("*cookie*.txt"), key=lambda x: x.stat().st_mtime, reverse=True):
             if _f.is_file() and _f.stat().st_size > 10:
                 set_cookie_file(str(_f))
                 break
     except Exception:
         pass
+
+if not COOKIE_FILE:
+    _cookie_candidates = [
+        os.getenv("COOKIE_FILE", ""),
+        os.getenv("COOKIES_FILE", ""),
+        "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies (1).txt",
+        "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies.txt",
+        str(WORKING_DIR / "cookies.txt"),
+        str(ROOT_DIR / "cookies.txt")
+    ]
+    for _cp in _cookie_candidates:
+        if _cp and set_cookie_file(_cp):
+            break
 
 if not COOKIE_FILE:
     _env_cookies = os.getenv("YOUTUBE_COOKIES", os.getenv("COOKIES", ""))

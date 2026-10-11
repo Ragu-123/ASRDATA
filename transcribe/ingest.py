@@ -72,12 +72,12 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
             'preferredcodec': 'm4a',
             'preferredquality': '128',
         }],
+        'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', {'ejs': 'github'}),
     }
 
     if getattr(config, "COOKIE_FILE", None):
         opts["cookiefile"] = config.COOKIE_FILE
-
-    if shutil.which("aria2c"):
+    elif shutil.which("aria2c"):
         opts["external_downloader"] = {"default": "aria2c"}
         opts["external_downloader_args"] = {
             "aria2c": ["-s", "8", "-x", "8", "-k", "1M", "-j", "8"]

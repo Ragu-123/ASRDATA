@@ -101,6 +101,7 @@ class AudioSegmenter:
                     'player_skip': ['web', 'web_embedded', 'android_vr']
                 }
             }),
+            'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', {'ejs': 'github'}),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'm4a',
@@ -109,8 +110,7 @@ class AudioSegmenter:
         }
         if getattr(config, "COOKIE_FILE", None):
             ydl_opts["cookiefile"] = config.COOKIE_FILE
-
-        if shutil.which("aria2c"):
+        elif shutil.which("aria2c"):
             ydl_opts["external_downloader"] = {"default": "aria2c"}
             ydl_opts["external_downloader_args"] = {
                 "aria2c": ["-s", "8", "-x", "8", "-k", "1M", "-j", "8"]
