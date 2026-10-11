@@ -417,13 +417,15 @@ class ClusterCoordinator:
                     'quiet': True,
                     'no_warnings': True,
                     'playliststart': start_idx,
-                    'playlistend': end_idx,
-                    'extractor_args': {
+                    'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                         'youtube': {
-                            'player_client': ['android', 'ios', 'android_vr']
+                            'player_client': ['android', 'ios', 'android_vr'],
+                            'player_skip': ['web', 'tv', 'web_embedded']
                         }
-                    }
+                    })
                 }
+                if getattr(config, "COOKIE_FILE", None):
+                    ydl_opts["cookiefile"] = config.COOKIE_FILE
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(ch_url, download=False)
                     entries = info.get("entries", []) if info else []

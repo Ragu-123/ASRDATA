@@ -61,7 +61,8 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         'fragment_retries': 5,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'android_vr']
+                'player_client': ['android', 'ios', 'android_vr'],
+                'player_skip': ['web', 'tv', 'web_embedded']
             }
         },
         'postprocessors': [{
@@ -71,6 +72,15 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         }],
     }
 
+    cookie_file = getattr(config, "COOKIE_FILE", None)
+    if not cookie_file:
+        for cp in [getattr(config, "WORKING_DIR", Path(".")) / "cookies.txt", Path("cookies.txt")]:
+            if cp.exists() and cp.stat().st_size > 10:
+                cookie_file = str(cp)
+                break
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+
     if shutil.which("aria2c"):
         opts["external_downloader"] = {"default": "aria2c"}
         opts["external_downloader_args"] = {
@@ -79,7 +89,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
 
     return opts
 
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr;player_skip=web,tv,web_embedded"'
 
 def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None, telegram_bot: Optional[Any] = None) -> Optional[Path]:
     """

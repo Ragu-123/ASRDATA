@@ -69,13 +69,31 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
+# Cookie File Detection (Kaggle secrets, .env, or local cookies.txt)
+COOKIE_FILE = None
+_cookie_paths = [WORKING_DIR / "cookies.txt", ROOT_DIR / "cookies.txt"]
+for _cp in _cookie_paths:
+    if _cp.exists() and _cp.stat().st_size > 10:
+        COOKIE_FILE = str(_cp)
+        break
+if not COOKIE_FILE:
+    _env_cookies = os.getenv("YOUTUBE_COOKIES", os.getenv("COOKIES", ""))
+    if _env_cookies.strip():
+        try:
+            _target = WORKING_DIR / "cookies.txt"
+            _target.write_text(_env_cookies.strip(), encoding="utf-8")
+            COOKIE_FILE = str(_target)
+        except Exception:
+            pass
+
 # yt-dlp Bot Detection Bypass Extractor Args
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios", "android_vr"]
+        "player_client": ["android", "ios", "android_vr"],
+        "player_skip": ["web", "tv", "web_embedded"]
     }
 }
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr;player_skip=web,tv,web_embedded"'
 
 # Default Seed Channels if catalog is empty
 DEFAULT_CHANNELS = [

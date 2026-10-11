@@ -76,17 +76,20 @@ class AudioSegmenter:
             'no_warnings': True,
             'socket_timeout': 30,
             'retries': 4,
-            'extractor_args': {
+            'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'android_vr']
+                    'player_client': ['android', 'ios', 'android_vr'],
+                    'player_skip': ['web', 'tv', 'web_embedded']
                 }
-            },
+            }),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'm4a',
                 'preferredquality': '128',
             }],
         }
+        if getattr(config, "COOKIE_FILE", None):
+            ydl_opts["cookiefile"] = config.COOKIE_FILE
         if shutil.which("aria2c"):
             ydl_opts["external_downloader"] = {"default": "aria2c"}
             ydl_opts["external_downloader_args"] = {

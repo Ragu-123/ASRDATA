@@ -26,11 +26,12 @@ class IngestionWorker:
     - Centralized coordinator leasing (sub-second, shared bucket catalog).
     - Accurate per-node session progress tracking.
     """
-    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = "", telegram_bot: Optional[Any] = None):
+    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = "", telegram_bot: Optional[Any] = None, concurrency: Optional[int] = None):
         self.coordinator = coordinator
         self.bucket_sync = bucket_sync
         self.tunnel_url = tunnel_url
         self.telegram_bot = telegram_bot
+        self.concurrency = concurrency or config.CONCURRENT_DOWNLOADS_PER_NODE
 
         self.running = False
         self.paused = False
@@ -261,11 +262,7 @@ class IngestionWorker:
                 'socket_timeout': 30,
                 'retries': 5,
                 'fragment_retries': 5,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'ios', 'android_vr']
-                    }
-                },
+                'extractor_args': config.YTDLP_EXTRACTOR_ARGS,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
@@ -273,6 +270,9 @@ class IngestionWorker:
                 }],
                 'progress_hooks': [ydl_hook]
             }
+
+            if getattr(config, "COOKIE_FILE", None):
+                ydl_opts["cookiefile"] = config.COOKIE_FILE
 
             if shutil.which("aria2c"):
                 ydl_opts["external_downloader"] = {"default": "aria2c"}
@@ -355,13 +355,18 @@ class IngestionWorker:
                         "elapsed": elapsed
                     }
             except Exception as e:
-                print(f"[WORKER] Failed {vid_id}: {e}")
+                err_str = str(e)
+                print(f"[WORKER] Failed {vid_id}: {err_str}")
+                is_bot_error = any(kw in err_str.lower() for kw in ["bot", "sign in to confirm", "429", "too many requests"])
+                if is_bot_error:
+                    print(f"[WORKER] ⚠️ Temporary YouTube rate limit / bot check detected on {vid_id}. Backing off 12s...")
+                    time.sleep(12)
                 if self.telegram_bot:
                     try:
                         self.telegram_bot.send_error_alert(
                             worker_id=config.NODE_ID,
                             video_id=vid_id,
-                            error_msg=f"Download failed: {e}"
+                            error_msg=f"Download failed: {err_str}"
                         )
                     except Exception:
                         pass
@@ -371,8 +376,8 @@ class IngestionWorker:
                     if vid_id in self.active_videos:
                         del self.active_videos[vid_id]
 
-        # Execute concurrently across threads (2 streams per node)
-        with ThreadPoolExecutor(max_workers=config.CONCURRENT_DOWNLOADS_PER_NODE) as executor:
+        # Execute concurrently across threads (self.concurrency streams per node)
+        with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
             future_to_item = {executor.submit(download_single, it): it for it in batch}
             for future in as_completed(future_to_item):
                 if not self.running or self.paused:

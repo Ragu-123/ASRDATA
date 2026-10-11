@@ -169,9 +169,11 @@ class TestBotAndYtdlpResilience(unittest.TestCase):
         from transcribe.ingest import get_ytdlp_audio_opts
         opts = get_ytdlp_audio_opts("test.%(ext)s")
         clients = opts["extractor_args"]["youtube"]["player_client"]
+        skips = opts["extractor_args"]["youtube"]["player_skip"]
         self.assertIn("android", clients)
         self.assertIn("ios", clients)
         self.assertIn("android_vr", clients)
+        self.assertIn("web", skips)
         self.assertIn("ba/b", opts["format"])
 
     def test_segmenter_player_clients_configured(self):

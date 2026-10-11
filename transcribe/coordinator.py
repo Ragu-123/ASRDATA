@@ -268,10 +268,19 @@ class TranscriptionCoordinator:
             'socket_timeout': 30,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'android_vr']
+                    'player_client': ['android', 'ios', 'android_vr'],
+                    'player_skip': ['web', 'tv', 'web_embedded']
                 }
             }
         }
+        cookie_file = getattr(config, "COOKIE_FILE", None)
+        if not cookie_file:
+            for cp in [getattr(config, "WORKING_DIR", Path(".")) / "cookies.txt", Path("cookies.txt")]:
+                if cp.exists() and cp.stat().st_size > 10:
+                    cookie_file = str(cp)
+                    break
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
 
         catalog = []
         try:

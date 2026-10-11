@@ -29,7 +29,7 @@ from coordinator import ClusterCoordinator
 from bucket_sync import BucketSync
 from worker import IngestionWorker
 
-def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE):
+def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE):
     print("\n" + "="*70)
     print("📥  TAMIL ASR STAGE 1: RAW AUDIO INGESTION ENGINE (main.py)")
     print("="*70)
@@ -38,6 +38,7 @@ def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE):
     print(f"💾 Working Dir:     {config.WORKING_DIR}")
     print(f"⚠️  Disk Threshold:  {config.DISK_THRESHOLD_GB} GB (Auto-flush trigger)")
     print(f"⚡ Batch Lease:     {batch_size} videos per lease")
+    print(f"🔥 Concurrency:     {concurrency} parallel streams (aria2c 8x sockets each)")
     if channel:
         print(f"📺 Target Channel:  {channel}")
     print("🚀 Task:            Download raw audio (.m4a) from YouTube via yt-dlp + aria2c")
@@ -63,6 +64,13 @@ def main():
         help=f"Videos per lease (default: {config.BATCH_LEASE_SIZE})"
     )
     parser.add_argument(
+        "--concurrency", "-w", "--workers",
+        dest="concurrency",
+        type=int,
+        default=config.CONCURRENT_DOWNLOADS_PER_NODE,
+        help=f"Number of concurrent video download streams (default: {config.CONCURRENT_DOWNLOADS_PER_NODE})"
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Process a single batch and exit"
@@ -75,7 +83,6 @@ def main():
     parser.add_argument("--url", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--video-id", "-v", dest="video_id", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--shard-threshold", type=int, default=400, help=argparse.SUPPRESS)
-    parser.add_argument("--concurrency", type=int, default=4, help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
@@ -127,6 +134,7 @@ def main():
                 f"🚀 *Worker `{config.NODE_ID}` started (Stage 1: Raw Ingest - `main.py`) on {env_str}!*\n\n"
                 f"• *Bucket*: `{config.BUCKET_ID}`\n"
                 f"• *Batch Size*: `{args.batch_size}` videos\n"
+                f"• *Concurrency*: `{args.concurrency}` parallel streams (Kaggle 4-vCPU optimized)\n"
                 f"• *Stage*: Ingestion only (No segmentation)\n"
                 f"• *Status*: Active and streaming downloads"
             )
@@ -137,7 +145,12 @@ def main():
         print("[BOOT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
     # 5. Initialize Ingestion Worker
-    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, telegram_bot=telegram_bot)
+    worker = IngestionWorker(
+        coordinator=coordinator,
+        bucket_sync=bucket_sync,
+        telegram_bot=telegram_bot,
+        concurrency=args.concurrency
+    )
     if telegram_bot:
         worker.startup_notified = True
 
@@ -160,7 +173,7 @@ def main():
 
     # 7. Start Ingestion Worker
     worker.start()
-    print_banner(channel=channel_input, batch_size=args.batch_size)
+    print_banner(channel=channel_input, batch_size=args.batch_size, concurrency=args.concurrency)
 
     print(f"[BOOT] Running Stage 1 ingestion worker. Downloading audio for channel(s)...")
     try:

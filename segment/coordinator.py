@@ -435,13 +435,15 @@ class SegmentCoordinator:
             'quiet': True,
             'no_warnings': True,
             'playlistend': limit,
-            'socket_timeout': 30,
-            'extractor_args': {
+            'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'android_vr']
+                    'player_client': ['android', 'ios', 'android_vr'],
+                    'player_skip': ['web', 'tv', 'web_embedded']
                 }
-            }
+            })
         }
+        if getattr(config, "COOKIE_FILE", None):
+            ydl_opts["cookiefile"] = config.COOKIE_FILE
         catalog = []
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
