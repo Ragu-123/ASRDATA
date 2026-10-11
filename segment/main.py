@@ -56,14 +56,24 @@ def run_segment_pipeline(
             from transcribe.telegram_bot import TelegramClusterBot
             telegram_bot = TelegramClusterBot(
                 token=config.TELEGRAM_BOT_TOKEN,
+                admin_id=config.TELEGRAM_ADMIN_ID or "5959376217",
                 coordinator=coordinator
             )
             telegram_bot.start_background_thread()
+            env_str = "Kaggle" if config.IS_KAGGLE else "Local"
+            telegram_bot.send_message(
+                f"🚀 *Worker `{config.WORKER_ID}` started (Segmentation / Stage 2) on {env_str}!*\n\n"
+                f"• *Target Dataset*: `{dataset_repo}`\n"
+                f"• *Batch Size*: `{batch_size}` videos\n"
+                f"• *Status*: Active and segmenting audio"
+            )
             print("[INIT] Telegram cluster monitor bot connected.")
         except Exception as e:
             print(f"[INIT] Notice starting Telegram bot: {e}")
+    else:
+        print("[INIT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
-    segmenter = AudioSegmenter(api=api)
+    segmenter = AudioSegmenter(api=api, telegram_bot=telegram_bot)
     syncer = ParquetSegmentSyncer(
         api=api,
         coordinator=coordinator,
@@ -82,6 +92,11 @@ def run_segment_pipeline(
     def shutdown(signum, frame):
         nonlocal running
         print("\n[SHUTDOWN] Signal received. Flushing buffered shards and releasing lease...")
+        if telegram_bot:
+            try:
+                telegram_bot.send_message(f"⏹️ *Worker `{config.WORKER_ID}` stopped (Segmentation stage)*")
+            except Exception:
+                pass
         running = False
         try:
             syncer.flush_shard()

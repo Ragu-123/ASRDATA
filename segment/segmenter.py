@@ -23,8 +23,9 @@ class AudioSegmenter:
     3. Crops clips into ~10s range (constrained between 4-15s).
     4. Extracts metadata (duration, audio, channel_name, video_id, segment_id).
     """
-    def __init__(self, api: HfApi):
+    def __init__(self, api: HfApi, telegram_bot: Optional[Any] = None):
         self.api = api
+        self.telegram_bot = telegram_bot
 
     def fetch_audio(self, video_id: str, dest_dir: Path, filename: Optional[str] = None) -> Optional[Path]:
         """
@@ -53,7 +54,7 @@ class AudioSegmenter:
         # 2. Download directly from YouTube
         print(f"[SEGMENTER] Downloading audio from YouTube: {video_id}...")
         ydl_opts = {
-            'format': 'ba[ext=m4a]/ba[ext=opus]/ba',
+            'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
             'outtmpl': str(dest_dir / f"{video_id}.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
@@ -61,7 +62,7 @@ class AudioSegmenter:
             'retries': 4,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios']
+                    'player_client': ['android', 'ios', 'android_vr']
                 }
             },
             'postprocessors': [{
@@ -84,16 +85,31 @@ class AudioSegmenter:
                 filepath = matching[0]
                 if filepath.suffix.lower() != ".m4a":
                     audio_target = dest_dir / f"{video_id}.m4a"
-                    subprocess.run(
+                    ret = subprocess.run(
                         ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_target)],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
                     )
-                    filepath.unlink(missing_ok=True)
-                    filepath = audio_target
+                    if ret.returncode != 0 or not audio_target.exists() or audio_target.stat().st_size < 10000:
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "aac", "-b:a", "128k", str(audio_target)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+                        )
+                    if audio_target.exists() and audio_target.stat().st_size > 10000:
+                        filepath.unlink(missing_ok=True)
+                        filepath = audio_target
                 if filepath.exists() and filepath.stat().st_size > 10000:
                     return filepath
         except Exception as e:
             print(f"[SEGMENTER] Error downloading {video_id} from YouTube: {e}")
+            if self.telegram_bot:
+                try:
+                    self.telegram_bot.send_error_alert(
+                        worker_id=config.WORKER_ID,
+                        video_id=video_id,
+                        error_msg=f"Segmenter download failed: {e}"
+                    )
+                except Exception:
+                    pass
         return None
 
     def get_audio_duration(self, audio_path: Path) -> float:

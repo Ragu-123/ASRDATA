@@ -23,6 +23,8 @@ import httpx
 from huggingface_hub import HfApi
 import transcribe.config as config
 
+DEFAULT_ADMIN_ID = "5959376217"
+
 class TelegramClusterBot:
     """
     Telegram Bot client for monitoring and controlling the Tamil ASR cluster.
@@ -35,12 +37,13 @@ class TelegramClusterBot:
         coordinator: Any = None,
         syncer: Any = None
     ):
-        self.token = token.strip()
-        self.base_url = f"https://api.telegram.org/bot{self.token}"
+        self.token = token.strip() if token else ""
+        self.base_url = f"https://api.telegram.org/bot{self.token}" if self.token else ""
         self.coordinator = coordinator
         self.syncer = syncer
         self.running = False
         self.thread: Optional[threading.Thread] = None
+        self.bot_info: Optional[Dict[str, Any]] = None
 
         # Lock and identity storage
         self.admin_file = config.WORKING_DIR / "telegram_admin.json"
@@ -57,16 +60,83 @@ class TelegramClusterBot:
         # Initialize admin identity
         self._load_admin_identity(preconfigured_id=admin_id or config.TELEGRAM_ADMIN_ID)
 
+        # Proactively verify connection and register command menu if token is present
+        if self.token:
+            self.bot_info = self.verify_connection()
+            self.setup_bot_commands()
+
+    def verify_connection(self) -> Optional[Dict[str, Any]]:
+        """Verify the bot token with Telegram getMe endpoint."""
+        if not self.token or not self.base_url:
+            return None
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(f"{self.base_url}/getMe")
+                if resp.status_code == 200:
+                    data = resp.json().get("result", {})
+                    username = data.get("username", "")
+                    bot_id = data.get("id", "")
+                    print(f"[TELEGRAM BOT] ✅ Connected successfully as @{username} (ID: {bot_id})")
+                    return data
+                elif resp.status_code == 401:
+                    print(f"[TELEGRAM BOT] ❌ Bot token is unauthorized (401). Verify TELEGRAM_BOT_TOKEN.")
+                else:
+                    print(f"[TELEGRAM BOT] ⚠️ Telegram getMe returned status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"[TELEGRAM BOT] Notice during getMe check: {e}")
+        return None
+
+    def setup_bot_commands(self) -> bool:
+        """Register the bot command menu with Telegram so the Menu button appears in chat."""
+        if not self.token or not self.base_url:
+            return False
+        commands = [
+            {"command": "status", "description": "📊 Live cluster overview & progress"},
+            {"command": "help", "description": "❓ Available commands guide"},
+            {"command": "errors", "description": "⚠️ View recent cluster errors"},
+            {"command": "add_channel", "description": "➕ Upfront scrape & queue YouTube channel"},
+            {"command": "flush", "description": "💾 Force immediate Parquet shard sync"},
+            {"command": "pause", "description": "⏸️ Pause cluster operations"},
+            {"command": "resume", "description": "▶️ Resume cluster operations"},
+            {"command": "stop", "description": "🛑 Graceful cluster shutdown"},
+            {"command": "delete_channel", "description": "🗑️ Delete channel catalog & records"},
+            {"command": "delete_manifest", "description": "🗑️ Reset completed tracking manifest"},
+            {"command": "admin", "description": "👑 Show admin lock status"}
+        ]
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(f"{self.base_url}/setMyCommands", json={"commands": commands})
+                ok = resp.status_code == 200 and resp.json().get("ok")
+                if ok:
+                    print("[TELEGRAM BOT] ✅ Bot command menu successfully registered with Telegram!")
+                else:
+                    print(f"[TELEGRAM BOT] Notice setting commands: {resp.status_code} {resp.text}")
+
+                # Ensure Menu button displays commands
+                try:
+                    client.post(
+                        f"{self.base_url}/setChatMenuButton",
+                        json={"menu_button": {"type": "commands"}}
+                    )
+                except Exception:
+                    pass
+
+                return ok
+        except Exception as e:
+            print(f"[TELEGRAM BOT] Notice during setup_bot_commands: {e}")
+            return False
+
+
     def _load_admin_identity(self, preconfigured_id: str = ""):
-        """Load admin identity from environment, tracking bucket, or local file."""
-        # 1. Environment variable if set
-        if preconfigured_id:
+        """Load admin identity from environment, tracking bucket, local file, or default."""
+        target_id = preconfigured_id or os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("ADMIN_USER_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        if target_id:
             try:
-                self.admin_user_id = int(preconfigured_id)
+                self.admin_user_id = int(target_id)
                 self.admin_chat_id = self.admin_user_id
             except ValueError:
-                self.admin_user_id = preconfigured_id
-                self.admin_chat_id = preconfigured_id
+                self.admin_user_id = target_id
+                self.admin_chat_id = target_id
             print(f"[TELEGRAM BOT] Admin preconfigured from env: {self.admin_user_id}")
             return
 
@@ -151,16 +221,25 @@ class TelegramClusterBot:
         self.recent_errors.append(entry)
         self.send_error_alert(worker_id, video_id, error_msg)
 
+    @property
+    def chat_id(self) -> Optional[Any]:
+        return self.admin_chat_id or self.admin_user_id
+
     # --- PROACTIVE ALERT DISPATCHERS ---
 
-    def send_message(self, text: str, parse_mode: Optional[str] = "Markdown") -> bool:
+    def send_message(self, text: str, parse_mode: Optional[str] = "Markdown", chat_id: Optional[Any] = None) -> bool:
         """Send a proactive Telegram message to the authorized admin with automatic markdown fallback."""
-        if not self.admin_chat_id:
+        target_chat_id = chat_id or self.admin_chat_id or self.admin_user_id or DEFAULT_ADMIN_ID
+        if not target_chat_id:
+            print("[TELEGRAM BOT] Notice: Cannot send message, no valid chat_id or admin_id found.")
+            return False
+        if not self.token or not self.base_url:
+            print("[TELEGRAM BOT] Notice: Cannot send message, TELEGRAM_BOT_TOKEN is empty.")
             return False
         try:
             with httpx.Client(timeout=10.0) as client:
                 payload = {
-                    "chat_id": self.admin_chat_id,
+                    "chat_id": target_chat_id,
                     "text": text
                 }
                 if parse_mode:
@@ -169,17 +248,42 @@ class TelegramClusterBot:
                 if resp.status_code == 200:
                     return True
 
-                # If Telegram rejected formatting (e.g. 400 Bad Request), fallback to plain text
+                # If Telegram rejected formatting (e.g. 400 Bad Request with bad Markdown), fallback to plain text
                 if parse_mode:
                     payload.pop("parse_mode", None)
                     resp_fb = client.post(f"{self.base_url}/sendMessage", json=payload)
-                    return resp_fb.status_code == 200
+                    if resp_fb.status_code == 200:
+                        return True
+                    resp = resp_fb
+
+                # Diagnose failed message delivery
+                try:
+                    err_json = resp.json()
+                    err_desc = err_json.get("description", "")
+                except Exception:
+                    err_desc = resp.text
+
+                if "chat not found" in err_desc.lower() or "bot was blocked" in err_desc.lower():
+                    bot_name = f"@{self.bot_info.get('username')}" if self.bot_info and self.bot_info.get("username") else "your bot"
+                    print(f"[TELEGRAM BOT] ⚠️ Telegram alert to {target_chat_id} failed ({err_desc}). The admin user must open the Telegram app, search for {bot_name}, and send /start to begin receiving messages!")
+                elif "unauthorized" in err_desc.lower() or resp.status_code == 401:
+                    print(f"[TELEGRAM BOT] ❌ Telegram bot token is unauthorized or invalid! Please check TELEGRAM_BOT_TOKEN in Kaggle Secrets.")
+                else:
+                    print(f"[TELEGRAM BOT] Warning sending message: {resp.status_code} {err_desc}")
                 return False
         except Exception as e:
             print(f"[TELEGRAM BOT] Failed to send message: {e}")
             return False
 
-    def send_shard_alert(self, shard_name: str, num_clips: int, duration_sec: float, total_hours: float, dataset_repo: str = config.DATASET_REPO):
+    def send_alert(self, text_or_title: str, details: str = "", chat_id: Optional[Any] = None) -> bool:
+        """Send a general alert to admin with automatic markdown fallback."""
+        if details:
+            msg = f"⚠️ *{text_or_title}*\n\n{details}"
+        else:
+            msg = f"⚠️ {text_or_title}"
+        return self.send_message(text=msg, chat_id=chat_id)
+
+    def send_shard_alert(self, shard_name: str, num_clips: int, duration_sec: float, total_hours: float, dataset_repo: str = config.DATASET_REPO, chat_id: Optional[Any] = None):
         """Proactive alert when an Apache Parquet shard is uploaded to Hugging Face Dataset."""
         dur_mins = duration_sec / 60.0
         dur_hrs = duration_sec / 3600.0
@@ -192,9 +296,9 @@ class TelegramClusterBot:
             f"• *Dataset*: `{dataset_repo}`\n"
             f"• *Storage*: Tier 2 Hugging Face Dataset (Zero-disk streaming ready)"
         )
-        return self.send_message(msg)
+        return self.send_message(text=msg, chat_id=chat_id)
 
-    def send_disk_alert(self, used_gb: float, total_gb: float, free_gb: float, percent: float):
+    def send_disk_alert(self, used_gb: float, total_gb: float, free_gb: float, percent: float, chat_id: Optional[Any] = None):
         """Proactive alert when node disk approaches threshold."""
         msg = (
             f"🚨 *Disk Guard Warning Alert!*\n\n"
@@ -202,10 +306,17 @@ class TelegramClusterBot:
             f"• *Free Space*: `{free_gb:.2f} GB`\n"
             f"• *Trigger*: Automatic shard flush executed to keep disk strictly under 1.0 GB quota."
         )
-        return self.send_message(msg)
+        return self.send_message(text=msg, chat_id=chat_id)
 
-    def send_error_alert(self, worker_id: str, video_id: str, error_msg: str, traceback_str: str = ""):
+    def send_error_alert(self, worker_id: str, video_id: str, error_msg: str, traceback_str: str = "", chat_id: Optional[Any] = None):
         """Proactive alert for pipeline failures or Cloudflare 502 exhaustion with traceback."""
+        entry = {
+            "time": time.strftime("%H:%M:%S"),
+            "worker_id": worker_id,
+            "video_id": video_id,
+            "error": str(error_msg)
+        }
+        self.recent_errors.append(entry)
         tb_block = f"\n\nTraceback:\n`{traceback_str[-350:]}`" if traceback_str else ""
         msg = (
             f"❌ *Cluster Error Notice*\n\n"
@@ -214,7 +325,7 @@ class TelegramClusterBot:
             f"• *Error*: `{str(error_msg)[:250]}`"
             f"{tb_block}"
         )
-        return self.send_message(msg)
+        return self.send_message(text=msg, chat_id=chat_id)
 
     # --- COMMAND HANDLERS ---
 
@@ -717,6 +828,9 @@ class TelegramClusterBot:
 
     def start_background_thread(self):
         """Start the Telegram Bot polling loop in an independent background thread."""
+        if not self.token or not self.base_url:
+            print("[TELEGRAM BOT] Notice: Skipping background monitor thread because TELEGRAM_BOT_TOKEN is not configured.")
+            return
         if self.thread and self.thread.is_alive():
             return
         self.running = True

@@ -26,10 +26,11 @@ class IngestionWorker:
     - Centralized coordinator leasing (sub-second, shared bucket catalog).
     - Accurate per-node session progress tracking.
     """
-    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = ""):
+    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = "", telegram_bot: Optional[Any] = None):
         self.coordinator = coordinator
         self.bucket_sync = bucket_sync
         self.tunnel_url = tunnel_url
+        self.telegram_bot = telegram_bot
 
         self.running = False
         self.paused = False
@@ -97,6 +98,19 @@ class IngestionWorker:
             return
         self.running = True
 
+        if self.telegram_bot and not getattr(self, "startup_notified", False):
+            self.startup_notified = True
+            try:
+                env_str = "Kaggle" if config.IS_KAGGLE else "Local"
+                self.telegram_bot.send_message(
+                    f"🚀 *Worker `{config.NODE_ID}` started (Ingestion) on {env_str}!*\n\n"
+                    f"• *Bucket*: `{config.BUCKET_ID}`\n"
+                    f"• *Batch Lease*: `{config.BATCH_LEASE_SIZE}` videos\n"
+                    f"• *Status*: Active and streaming downloads"
+                )
+            except Exception:
+                pass
+
         # 1. Dedicated Heartbeat Daemon (Runs non-stop every 6s)
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_daemon, daemon=True)
         self.heartbeat_thread.start()
@@ -137,8 +151,18 @@ class IngestionWorker:
         print(f"[WORKER {config.NODE_ID}] Resumed.")
 
     def stop(self):
+        if not self.running:
+            return
         self.running = False
         print(f"[WORKER {config.NODE_ID}] Stopping...")
+        if self.telegram_bot:
+            try:
+                self.telegram_bot.send_message(
+                    f"⏹️ *Worker `{config.NODE_ID}` stopped (Ingestion)*\n"
+                    f"• *Session Downloaded*: `{self.session_count}` videos ({self.session_hours:.2f} hrs)"
+                )
+            except Exception:
+                pass
 
     def trigger_flush(self):
         """Flush staging files to HF Bucket."""
@@ -230,7 +254,7 @@ class IngestionWorker:
                             self.download_speed = speed_clean
 
             ydl_opts = {
-                'format': 'ba[ext=m4a]/ba[ext=opus]/ba',
+                'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
                 'outtmpl': str(config.STAGING_DIR / f"{vid_id}.%(ext)s"),
                 'quiet': True,
                 'no_warnings': True,
@@ -239,7 +263,7 @@ class IngestionWorker:
                 'fragment_retries': 5,
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android', 'ios']
+                        'player_client': ['android', 'ios', 'android_vr']
                     }
                 },
                 'postprocessors': [{
@@ -332,6 +356,15 @@ class IngestionWorker:
                     }
             except Exception as e:
                 print(f"[WORKER] Failed {vid_id}: {e}")
+                if self.telegram_bot:
+                    try:
+                        self.telegram_bot.send_error_alert(
+                            worker_id=config.NODE_ID,
+                            video_id=vid_id,
+                            error_msg=f"Download failed: {e}"
+                        )
+                    except Exception:
+                        pass
                 return None
             finally:
                 with self._lock:
@@ -379,3 +412,69 @@ class IngestionWorker:
         self.coordinator.release_batch()
         self.batch_info = "Batch Completed"
         self.download_speed = "0 MB/s"
+
+def main():
+    import sys
+    import signal
+    import argparse
+    from huggingface_hub import HfApi
+
+    parser = argparse.ArgumentParser(description="Tamil ASR Audio Harvest Ingestion Worker")
+    parser.add_argument("--batch-size", type=int, default=config.BATCH_LEASE_SIZE, help="Videos per lease")
+    parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    args = parser.parse_args()
+
+    hf_token = config.get_hf_token()
+    if not hf_token:
+        print("[ERROR] HF_TOKEN is not set!", file=sys.stderr)
+        sys.exit(1)
+
+    api = HfApi(token=hf_token)
+    coordinator = ClusterCoordinator(api=api, bucket_id=config.BUCKET_ID, node_id=config.NODE_ID)
+    bucket_sync = BucketSync(api=api, coordinator=coordinator)
+
+    telegram_bot = None
+    if config.TELEGRAM_BOT_TOKEN:
+        try:
+            from transcribe.telegram_bot import TelegramClusterBot
+            telegram_bot = TelegramClusterBot(
+                token=config.TELEGRAM_BOT_TOKEN,
+                admin_id=config.TELEGRAM_ADMIN_ID or "5959376217",
+                coordinator=coordinator
+            )
+            telegram_bot.start_background_thread()
+            print("[WORKER] Telegram cluster monitor bot connected and running.")
+        except Exception as e:
+            print(f"[WORKER] Notice starting Telegram bot: {e}")
+    else:
+        print("[WORKER] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
+
+    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, telegram_bot=telegram_bot)
+
+    def shutdown_handler(signum, frame):
+        print("\n[SHUTDOWN] Signal received. Gracefully flushing and releasing lease...")
+        worker.stop()
+        coordinator.deregister_worker()
+        if telegram_bot:
+            telegram_bot.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    worker.start()
+    try:
+        while worker.running:
+            time.sleep(2)
+            if args.once and worker.session_count > 0:
+                break
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        worker.stop()
+        coordinator.deregister_worker()
+        if telegram_bot:
+            telegram_bot.stop()
+
+if __name__ == "__main__":
+    main()

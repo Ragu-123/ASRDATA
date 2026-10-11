@@ -65,16 +65,26 @@ async def run_transcription_pipeline(
         try:
             telegram_bot = TelegramClusterBot(
                 token=config.TELEGRAM_BOT_TOKEN,
+                admin_id=config.TELEGRAM_ADMIN_ID or "5959376217",
                 coordinator=coordinator
             )
             telegram_bot.start_background_thread()
+            env_str = "Kaggle" if config.IS_KAGGLE else "Local"
+            telegram_bot.send_message(
+                f"🚀 *Worker `{config.WORKER_ID}` started (Transcription / Stage 3) on {env_str}!*\n\n"
+                f"• *Audited Dataset*: `{audited_dataset}`\n"
+                f"• *Concurrency*: `{concurrency}`\n"
+                f"• *Status*: Active and transcribing audio"
+            )
             print("[INIT] Telegram cluster monitor bot connected and running.")
         except Exception as e:
             print(f"[INIT] Notice starting Telegram bot: {e}")
+    else:
+        print("[INIT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
     # 4. Initialize Segmenter, Auditor, Parquet Syncer, and Disk Guard
     auditor = GeminiAuditor(proxy_url=proxy_url, concurrency=concurrency)
-    segmenter = AudioSegmenter(api=api)
+    segmenter = AudioSegmenter(api=api, telegram_bot=telegram_bot)
     syncer = ParquetDatasetSyncer(
         api=api,
         coordinator=coordinator,
@@ -115,6 +125,11 @@ async def run_transcription_pipeline(
     def shutdown(signum, frame):
         nonlocal running
         print("\n[SHUTDOWN] Signal received. Flushing pending shards and releasing lease...")
+        if telegram_bot:
+            try:
+                telegram_bot.send_message(f"⏹️ *Worker `{config.WORKER_ID}` stopped (Transcription stage)*")
+            except Exception:
+                pass
         running = False
         try:
             syncer.flush_shard()

@@ -420,7 +420,7 @@ class ClusterCoordinator:
                     'playlistend': end_idx,
                     'extractor_args': {
                         'youtube': {
-                            'player_client': ['android', 'ios']
+                            'player_client': ['android', 'ios', 'android_vr']
                         }
                     }
                 }
@@ -843,7 +843,7 @@ class ClusterCoordinator:
             'socket_timeout': 30,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios']
+                    'player_client': ['android', 'ios', 'android_vr']
                 }
             }
         }

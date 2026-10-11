@@ -43,7 +43,15 @@ except Exception:
 
 # Telegram Bot Settings
 TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "")))
+TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
+
+# yt-dlp Bot Detection Bypass Extractor Args
+YTDLP_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["android", "ios", "android_vr"]
+    }
+}
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr"'
 
 # Quota & Batch Controls
 DISK_PER_NODE_GB = 19.5

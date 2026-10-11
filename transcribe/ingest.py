@@ -52,7 +52,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
     - Falls back seamlessly to native yt-dlp multi-fragment downloader.
     """
     opts: Dict[str, Any] = {
-        'format': 'ba[ext=m4a]/ba[ext=opus]/ba',
+        'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
         'outtmpl': output_template,
         'quiet': quiet,
         'no_warnings': True,
@@ -61,7 +61,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         'fragment_retries': 5,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios']
+                'player_client': ['android', 'ios', 'android_vr']
             }
         },
         'postprocessors': [{
@@ -79,7 +79,9 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
 
     return opts
 
-def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None) -> Optional[Path]:
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr"'
+
+def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None, telegram_bot: Optional[Any] = None) -> Optional[Path]:
     """
     Fast audio-only download from YouTube using aria2c or native downloader.
     """
@@ -96,16 +98,31 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
             filepath = matching[0]
             if filepath.suffix.lower() != ".m4a":
                 audio_target = dest_dir / f"{video_id}.m4a"
-                subprocess.run(
+                ret = subprocess.run(
                     ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_target)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
                 )
-                filepath.unlink(missing_ok=True)
-                filepath = audio_target
+                if ret.returncode != 0 or not audio_target.exists() or audio_target.stat().st_size < 10000:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "aac", "-b:a", "128k", str(audio_target)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+                    )
+                if audio_target.exists() and audio_target.stat().st_size > 10000:
+                    filepath.unlink(missing_ok=True)
+                    filepath = audio_target
             if filepath.exists() and filepath.stat().st_size > 10000:
                 return filepath
     except Exception as e:
         print(f"[INGEST] Notice downloading {video_id}: {e}")
+        if telegram_bot:
+            try:
+                telegram_bot.send_error_alert(
+                    worker_id=config.WORKER_ID if hasattr(config, "WORKER_ID") else "ingest-worker",
+                    video_id=video_id,
+                    error_msg=f"Ingest download failed: {e}"
+                )
+            except Exception:
+                pass
 
     return None
 

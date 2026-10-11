@@ -400,7 +400,13 @@ class SegmentCoordinator:
             'extract_flat': 'in_playlist',
             'quiet': True,
             'no_warnings': True,
-            'playlistend': limit
+            'playlistend': limit,
+            'socket_timeout': 30,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios', 'android_vr']
+                }
+            }
         }
         catalog = []
         try:

@@ -80,11 +80,24 @@ def main():
     if config.TELEGRAM_BOT_TOKEN:
         try:
             from transcribe.telegram_bot import TelegramClusterBot
-            telegram_bot = TelegramClusterBot(token=config.TELEGRAM_BOT_TOKEN, coordinator=coordinator)
+            telegram_bot = TelegramClusterBot(
+                token=config.TELEGRAM_BOT_TOKEN,
+                admin_id=config.TELEGRAM_ADMIN_ID or "5959376217",
+                coordinator=coordinator
+            )
             telegram_bot.start_background_thread()
+            env_str = "Kaggle" if config.IS_KAGGLE else "Local"
+            telegram_bot.send_message(
+                f"🚀 *Worker `{config.NODE_ID}` started (Ingestion / Stage 1) on {env_str}!*\n\n"
+                f"• *Bucket*: `{config.BUCKET_ID}`\n"
+                f"• *Batch Size*: `{args.batch_size}` videos\n"
+                f"• *Status*: Active and streaming downloads"
+            )
             print("[BOOT] Telegram cluster monitor bot connected and running.")
         except Exception as e:
             print(f"[BOOT] Notice starting Telegram bot: {e}")
+    else:
+        print("[BOOT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
     # 5. Start Cloudflare Tunnel (if web enabled)
     tunnel = None
@@ -94,7 +107,9 @@ def main():
         tunnel_url = tunnel.start()
 
     # 6. Initialize Worker
-    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, tunnel_url=tunnel_url)
+    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, tunnel_url=tunnel_url, telegram_bot=telegram_bot)
+    if telegram_bot:
+        worker.startup_notified = True
 
     # Connect references to FastAPI app
     app.coordinator_ref = coordinator
@@ -103,6 +118,11 @@ def main():
     # Signal Handlers for Graceful Shutdown
     def shutdown_handler(signum, frame):
         print("\n[SHUTDOWN] Signal received. Gracefully flushing and releasing lease...")
+        if telegram_bot:
+            try:
+                telegram_bot.send_message(f"⏹️ *Worker `{config.NODE_ID}` stopped (shutdown signal received)*")
+            except Exception:
+                pass
         worker.stop()
         coordinator.deregister_worker()
         if tunnel:
