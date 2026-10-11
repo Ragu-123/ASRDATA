@@ -99,9 +99,42 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
     out_template = str(dest_dir / f"{video_id}.%(ext)s")
     opts = get_ytdlp_audio_opts(out_template)
 
+    def _extract_with_fallback(current_opts):
+        try:
+            with yt_dlp.YoutubeDL(current_opts) as ydl:
+                return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+        except Exception as dl_err:
+            err_msg = str(dl_err)
+            if "aria2c" in err_msg.lower() or "external downloader" in err_msg.lower() or "code 22" in err_msg.lower():
+                print(f"[INGEST] ⚠️ aria2c failed on {video_id}. Retrying with native yt-dlp downloader...")
+                native_opts = dict(current_opts)
+                native_opts.pop("external_downloader", None)
+                native_opts.pop("external_downloader_args", None)
+                try:
+                    with yt_dlp.YoutubeDL(native_opts) as ydl_native:
+                        return ydl_native.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                except Exception as native_err:
+                    err_msg = str(native_err)
+                    current_opts = native_opts
+
+            if current_opts.get("cookiefile"):
+                if any(p in err_msg.lower() for p in ["page needs to be reloaded", "requested format is not available", "bot", "sign in"]):
+                    print(f"[INGEST] ⚠️ Cookie/client conflict on {video_id}. Retrying with Android client without cookies...")
+                    android_opts = dict(current_opts)
+                    android_opts.pop("cookiefile", None)
+                    android_opts["extractor_args"] = {
+                        "youtube": {
+                            "player_client": ["android", "android_vr"],
+                            "player_skip": ["web", "tv", "web_embedded"]
+                        }
+                    }
+                    with yt_dlp.YoutubeDL(android_opts) as ydl_android:
+                        return ydl_android.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+
+            raise dl_err
+
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+        _extract_with_fallback(opts)
 
         matching = list(dest_dir.glob(f"{video_id}.*"))
         if matching:

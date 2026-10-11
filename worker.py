@@ -291,69 +291,104 @@ class IngestionWorker:
                     "eta": "starting..."
                 }
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
-                    if not info:
-                        return None
-
-                    dur = info.get("duration") or item.get("duration", 0)
-
-                    # Look for actual downloaded file on disk
-                    matching = list(config.STAGING_DIR.glob(f"{vid_id}.*"))
-                    if not matching:
-                        return None
-
-                    filepath = matching[0]
-
-                    # STRICT AUDIO GUARD: Convert any video container (.mp4, .webm, .mkv) to .m4a audio
-                    if filepath.suffix.lower() in [".mp4", ".webm", ".mkv", ".mov", ".avi"]:
-                        audio_dest = config.STAGING_DIR / f"{vid_id}.m4a"
+            def _extract_with_fallback(current_opts):
+                try:
+                    with yt_dlp.YoutubeDL(current_opts) as ydl:
+                        return ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                except Exception as dl_err:
+                    err_msg = str(dl_err)
+                    # 1. aria2c exit code 22 / external downloader failure: fallback to native yt-dlp downloader
+                    if "aria2c" in err_msg.lower() or "external downloader" in err_msg.lower() or "code 22" in err_msg.lower():
+                        print(f"[WORKER] ⚠️ aria2c failed on {vid_id} ({err_msg[:60]}...). Falling back to native yt-dlp downloader...")
+                        native_opts = dict(current_opts)
+                        native_opts.pop("external_downloader", None)
+                        native_opts.pop("external_downloader_args", None)
                         try:
-                            # 1. Attempt fast stream copy of audio stream
-                            ret = subprocess.run(
-                                ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_dest)],
+                            with yt_dlp.YoutubeDL(native_opts) as ydl_native:
+                                return ydl_native.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                        except Exception as native_err:
+                            err_msg = str(native_err)
+                            current_opts = native_opts
+
+                    # 2. Cookie / Web client rejection: fallback to Android player client without cookies
+                    if current_opts.get("cookiefile"):
+                        if any(phrase in err_msg.lower() for phrase in ["page needs to be reloaded", "requested format is not available", "bot", "sign in"]):
+                            print(f"[WORKER] ⚠️ Cookie/client conflict on {vid_id} ({err_msg[:60]}...). Retrying with Android client without cookies...")
+                            android_opts = dict(current_opts)
+                            android_opts.pop("cookiefile", None)
+                            android_opts["extractor_args"] = {
+                                "youtube": {
+                                    "player_client": ["android", "android_vr"],
+                                    "player_skip": ["web", "tv", "web_embedded"]
+                                }
+                            }
+                            with yt_dlp.YoutubeDL(android_opts) as ydl_android:
+                                return ydl_android.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+
+                    raise dl_err
+
+            try:
+                info = _extract_with_fallback(ydl_opts)
+                if not info:
+                    return None
+
+                dur = info.get("duration") or item.get("duration", 0)
+
+                # Look for actual downloaded file on disk
+                matching = list(config.STAGING_DIR.glob(f"{vid_id}.*"))
+                if not matching:
+                    return None
+
+                filepath = matching[0]
+
+                # STRICT AUDIO GUARD: Convert any video container (.mp4, .webm, .mkv) to .m4a audio
+                if filepath.suffix.lower() in [".mp4", ".webm", ".mkv", ".mov", ".avi"]:
+                    audio_dest = config.STAGING_DIR / f"{vid_id}.m4a"
+                    try:
+                        # 1. Attempt fast stream copy of audio stream
+                        ret = subprocess.run(
+                            ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_dest)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=30
+                        )
+                        # 2. If copy failed or produces invalid file, transcode audio to 128k aac
+                        if ret.returncode != 0 or not audio_dest.exists() or audio_dest.stat().st_size < 10000:
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "aac", "-b:a", "128k", str(audio_dest)],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
-                                timeout=30
+                                timeout=60
                             )
-                            # 2. If copy failed or produces invalid file, transcode audio to 128k aac
-                            if ret.returncode != 0 or not audio_dest.exists() or audio_dest.stat().st_size < 10000:
-                                subprocess.run(
-                                    ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "aac", "-b:a", "128k", str(audio_dest)],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                    timeout=60
-                                )
-                            if audio_dest.exists() and audio_dest.stat().st_size > 10000:
-                                filepath.unlink(missing_ok=True)
-                                filepath = audio_dest
-                        except Exception as conv_e:
-                            print(f"[WORKER] Video stripping notice for {vid_id}: {conv_e}")
+                        if audio_dest.exists() and audio_dest.stat().st_size > 10000:
+                            filepath.unlink(missing_ok=True)
+                            filepath = audio_dest
+                    except Exception as conv_e:
+                        print(f"[WORKER] Video stripping notice for {vid_id}: {conv_e}")
 
-                    # Reject and delete if still not a valid audio container
-                    if filepath.suffix.lower() not in [".m4a", ".opus", ".ogg", ".mp3", ".wav", ".aac"]:
-                        filepath.unlink(missing_ok=True)
-                        print(f"[WORKER] Dropped non-audio file: {filepath.name}")
-                        return None
+                # Reject and delete if still not a valid audio container
+                if filepath.suffix.lower() not in [".m4a", ".opus", ".ogg", ".mp3", ".wav", ".aac"]:
+                    filepath.unlink(missing_ok=True)
+                    print(f"[WORKER] Dropped non-audio file: {filepath.name}")
+                    return None
 
-                    filename = filepath.name
-                    size_mb = filepath.stat().st_size / (1024**2)
+                filename = filepath.name
+                size_mb = filepath.stat().st_size / (1024**2)
 
-                    elapsed = time.time() - t0
+                elapsed = time.time() - t0
 
-                    if size_mb < 0.02:
-                        print(f"[WORKER] Warning: {vid_id} yielded empty file ({size_mb} MB). Skipping.")
-                        return None
+                if size_mb < 0.02:
+                    print(f"[WORKER] Warning: {vid_id} yielded empty file ({size_mb} MB). Skipping.")
+                    return None
 
-                    return {
-                        "id": vid_id,
-                        "title": item.get("title", ""),
-                        "duration_seconds": dur,
-                        "file": filename,
-                        "size_mb": round(size_mb, 2),
-                        "elapsed": elapsed
-                    }
+                return {
+                    "id": vid_id,
+                    "title": item.get("title", ""),
+                    "duration_seconds": dur,
+                    "file": filename,
+                    "size_mb": round(size_mb, 2),
+                    "elapsed": elapsed
+                }
             except Exception as e:
                 err_str = str(e)
                 print(f"[WORKER] Failed {vid_id}: {err_str}")

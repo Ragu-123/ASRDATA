@@ -39,6 +39,10 @@ def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, c
     print(f"⚠️  Disk Threshold:  {config.DISK_THRESHOLD_GB} GB (Auto-flush trigger)")
     print(f"⚡ Batch Lease:     {batch_size} videos per lease")
     print(f"🔥 Concurrency:     {concurrency} parallel streams (aria2c 8x sockets each)")
+    if getattr(config, "COOKIE_FILE", None):
+        print(f"🍪 YouTube Cookies: ACTIVE ({config.COOKIE_FILE})")
+    else:
+        print("🍪 YouTube Cookies: Not configured (Using Android/VR player_skip guard)")
     if channel:
         print(f"📺 Target Channel:  {channel}")
     print("🚀 Task:            Download raw audio (.m4a) from YouTube via yt-dlp + aria2c")
@@ -71,6 +75,13 @@ def main():
         help=f"Number of concurrent video download streams (default: {config.CONCURRENT_DOWNLOADS_PER_NODE})"
     )
     parser.add_argument(
+        "--cookies", "--cookie", "--cookie-file",
+        dest="cookies",
+        nargs="*",
+        default=[],
+        help="Path to YouTube cookies.txt file (e.g. /kaggle/input/.../cookies.txt)"
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Process a single batch and exit"
@@ -85,6 +96,17 @@ def main():
     parser.add_argument("--shard-threshold", type=int, default=400, help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    # Process cookies flag
+    if args.cookies:
+        raw_cookie_str = " ".join(args.cookies) if isinstance(args.cookies, list) else str(args.cookies)
+        cookie_res = config.set_cookie_file(raw_cookie_str)
+        if cookie_res:
+            print(f"[BOOT] 🍪 Successfully loaded YouTube cookies from: {cookie_res}")
+        else:
+            print(f"[BOOT] ⚠️ Cookie file not found at: {raw_cookie_str}", file=sys.stderr)
+    elif getattr(config, "COOKIE_FILE", None):
+        print(f"[BOOT] 🍪 Auto-detected YouTube cookies from: {config.COOKIE_FILE}")
 
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
@@ -129,12 +151,13 @@ def main():
                 coordinator=coordinator
             )
             telegram_bot.start_background_thread()
-            env_str = "Kaggle" if config.IS_KAGGLE else "Local"
+            cookie_label = f"Active (`{Path(config.COOKIE_FILE).name}`)" if getattr(config, "COOKIE_FILE", None) else "None"
             telegram_bot.send_message(
                 f"🚀 *Worker `{config.NODE_ID}` started (Stage 1: Raw Ingest - `main.py`) on {env_str}!*\n\n"
                 f"• *Bucket*: `{config.BUCKET_ID}`\n"
                 f"• *Batch Size*: `{args.batch_size}` videos\n"
                 f"• *Concurrency*: `{args.concurrency}` parallel streams (Kaggle 4-vCPU optimized)\n"
+                f"• *Cookies*: {cookie_label}\n"
                 f"• *Stage*: Ingestion only (No segmentation)\n"
                 f"• *Status*: Active and streaming downloads"
             )

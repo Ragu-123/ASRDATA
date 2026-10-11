@@ -1,7 +1,9 @@
 import os
 import sys
 import uuid
+import shutil
 from pathlib import Path
+from typing import Optional
 
 # Ensure root is in sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -69,20 +71,57 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
-# Cookie File Detection (Kaggle secrets, .env, or local cookies.txt)
+# Cookie File Detection (Kaggle secrets, inputs, .env, or local cookies.txt)
 COOKIE_FILE = None
-_cookie_paths = [WORKING_DIR / "cookies.txt", ROOT_DIR / "cookies.txt"]
-for _cp in _cookie_paths:
-    if _cp.exists() and _cp.stat().st_size > 10:
-        COOKIE_FILE = str(_cp)
+
+def set_cookie_file(path_str: str) -> Optional[str]:
+    global COOKIE_FILE
+    if not path_str:
+        return COOKIE_FILE
+    p = Path(str(path_str).strip().strip("'\""))
+    if p.exists() and p.is_file() and p.stat().st_size > 10:
+        resolved_str = str(p.resolve())
+        if "/kaggle/input" in resolved_str or not os.access(resolved_str, os.W_OK):
+            target = Path("/kaggle/working/cookies.txt" if IS_KAGGLE else WORKING_DIR / "cookies.txt")
+            try:
+                if target.resolve() != p.resolve():
+                    shutil.copy2(resolved_str, str(target))
+                    p = target
+            except Exception:
+                pass
+        COOKIE_FILE = str(p.resolve())
+        os.environ["COOKIE_FILE"] = COOKIE_FILE
+        return COOKIE_FILE
+    return None
+
+_cookie_candidates = [
+    os.getenv("COOKIE_FILE", ""),
+    os.getenv("COOKIES_FILE", ""),
+    "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies (1).txt",
+    "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies.txt",
+    str(WORKING_DIR / "cookies.txt"),
+    str(ROOT_DIR / "cookies.txt")
+]
+for _cp in _cookie_candidates:
+    if _cp and set_cookie_file(_cp):
         break
+
+if not COOKIE_FILE and os.path.exists("/kaggle/input"):
+    try:
+        for _f in Path("/kaggle/input").rglob("*cookie*.txt"):
+            if _f.is_file() and _f.stat().st_size > 10:
+                set_cookie_file(str(_f))
+                break
+    except Exception:
+        pass
+
 if not COOKIE_FILE:
     _env_cookies = os.getenv("YOUTUBE_COOKIES", os.getenv("COOKIES", ""))
     if _env_cookies.strip():
         try:
             _target = WORKING_DIR / "cookies.txt"
             _target.write_text(_env_cookies.strip(), encoding="utf-8")
-            COOKIE_FILE = str(_target)
+            set_cookie_file(str(_target))
         except Exception:
             pass
 
