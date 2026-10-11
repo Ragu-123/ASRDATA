@@ -255,11 +255,11 @@ async def run_transcription_pipeline(
             await asyncio.sleep(20)
             continue
 
-        print(f"[COORDINATOR] Successfully leased {len(batch)} video(s): {[v['video_id'] for v in batch]}")
+        print(f"[COORDINATOR] Successfully leased {len(batch)} video(s): {[v.get('video_id') or v.get('id') for v in batch]}")
         coordinator.update_heartbeat(status="processing", active_streams=batch)
 
         for vid_meta in batch:
-            vid_id = vid_meta["video_id"]
+            vid_id = vid_meta.get("video_id") or vid_meta.get("id")
             vid_title = vid_meta.get("title", vid_id)
             source_file = vid_meta.get("file", f"{vid_id}.m4a")
             staging_video_dir = config.STAGING_DIR / vid_id

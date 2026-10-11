@@ -504,7 +504,9 @@ class SegmentCoordinator:
                     # Check TTL (45 mins)
                     if now - lease_time < (config.LEASE_TTL_MINUTES * 60):
                         for v in l_data.get("videos", []):
-                            active_leased_vids.add(v.get("video_id"))
+                            v_id = v.get("video_id") or v.get("id")
+                            if v_id:
+                                active_leased_vids.add(v_id)
                 except Exception:
                     pass
                 finally:
@@ -522,10 +524,14 @@ class SegmentCoordinator:
                     continue
                 cat = self.get_channel_catalog(ch)
                 for item in cat:
-                    vid_id = item["video_id"]
+                    vid_id = item.get("video_id") or item.get("id")
+                    if not vid_id:
+                        continue
                     if vid_id not in completed_vids and vid_id not in active_leased_vids:
                         candidates.append({
                             **item,
+                            "video_id": vid_id,
+                            "id": vid_id,
                             "channel_name": ch.get("name", ch.get("id", "Unknown"))
                         })
                         if len(candidates) >= batch_size:

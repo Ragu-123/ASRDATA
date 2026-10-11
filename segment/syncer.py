@@ -123,9 +123,9 @@ class ParquetSegmentSyncer:
         Purges audio slice files immediately to protect disk quota.
         Flushes Parquet shard if threshold is reached.
         """
-        video_id = video_meta["video_id"]
+        video_id = video_meta.get("video_id") or video_meta.get("id")
         channel_name = video_meta.get("channel_name") or video_meta.get("channel") or "Unknown"
-        total_dur = video_meta.get("duration_seconds") or sum(s.get("duration", 0) for s in segments)
+        total_dur = video_meta.get("duration_seconds") or video_meta.get("duration") or sum(s.get("duration", 0) for s in segments)
 
         print(f"\n========================================================")
         print(f"[SEGMENT SYNCER] Packaging video '{video_id}' ({len(segments)} clips)...")

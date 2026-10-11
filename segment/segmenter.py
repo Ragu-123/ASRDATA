@@ -98,6 +98,7 @@ class AudioSegmenter:
                 with yt_dlp.YoutubeDL(current_opts) as ydl:
                     return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
             except Exception as dl_err:
+                err_msg = str(dl_err)
                 if any(term in err_msg.lower() for term in ["aria2c", "external downloader", "code 22", "code 29", "exited with code"]):
                     print(f"[SEGMENTER] ⚠️ aria2c notice on {video_id}. Retrying with native yt-dlp downloader...")
                     native_opts = dict(current_opts)

@@ -573,14 +573,15 @@ class TranscriptionCoordinator:
                 continue
             catalog = self.get_channel_catalog(ch)
             for vid in catalog:
-                vid_id = vid.get("id")
+                vid_id = vid.get("id") or vid.get("video_id")
                 if not vid_id:
                     continue
                 if vid_id not in completed_ids and vid_id not in leased_video_ids:
                     item = {
                         "video_id": vid_id,
+                        "id": vid_id,
                         "title": vid.get("title", ""),
-                        "duration_seconds": vid.get("duration", 0),
+                        "duration_seconds": vid.get("duration_seconds") or vid.get("duration", 0),
                         "channel": ch.get("name", ch["id"]),
                         "file": f"{vid_id}.m4a"
                     }
@@ -625,7 +626,7 @@ class TranscriptionCoordinator:
             "worker_id": self.worker_id,
             "leased_at": now,
             "expires_at": now + (config.LEASE_TTL_MINUTES * 60),
-            "video_ids": [c["video_id"] for c in candidates],
+            "video_ids": [c.get("video_id") or c.get("id") for c in candidates],
             "count": len(candidates)
         }
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:

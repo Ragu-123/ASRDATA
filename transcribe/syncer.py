@@ -110,8 +110,8 @@ class ParquetDatasetSyncer:
         Automatically flushes to Parquet shard if threshold is reached.
         Purges local raw audio and slice files to maintain disk under 1.0 GB.
         """
-        video_id = video_meta["video_id"]
-        total_dur = video_meta.get("duration_seconds") or sum(s.get("duration", 0) for s in audited_segments)
+        video_id = video_meta.get("video_id") or video_meta.get("id")
+        total_dur = video_meta.get("duration_seconds") or video_meta.get("duration") or sum(s.get("duration", 0) for s in audited_segments)
 
         print(f"\n========================================================")
         print(f"[PARQUET SYNCER] Packaging video '{video_id}' ({len(audited_segments)} clips)...")
