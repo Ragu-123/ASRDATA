@@ -324,9 +324,16 @@ def main():
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
     parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
-    parser.add_argument("--once", action="store_true", help="Process a single leased shard or batch and exit")
+    parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+
+    leftovers = list(args.extra_args) + list(unknown)
+    if leftovers and not args.proxy_url:
+        for token in list(leftovers):
+            if token.startswith("http://") or token.startswith("https://"):
+                args.proxy_url = token
+                break
 
     proxy_url = args.proxy_url or config.DEFAULT_PROXY_URL
     if not proxy_url:

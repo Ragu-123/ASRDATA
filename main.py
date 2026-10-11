@@ -93,9 +93,28 @@ def main():
     parser.add_argument("--dataset", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--url", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--video-id", "-v", dest="video_id", type=str, default="", help=argparse.SUPPRESS)
-    parser.add_argument("--shard-threshold", type=int, default=400, help=argparse.SUPPRESS)
+    parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+
+    # Smart fallback for positional or unrecognized arguments (e.g. unquoted paths with spaces/parentheses)
+    leftovers = list(args.extra_args) + list(unknown)
+    if leftovers:
+        # Check if any leftover is channel (@channel or http)
+        for token in list(leftovers):
+            if token.startswith("@") or "youtube.com" in token or "youtu.be" in token:
+                if not args.channel:
+                    args.channel = token
+                leftovers.remove(token)
+            elif token.isdigit() and args.concurrency == config.CONCURRENT_DOWNLOADS_PER_NODE:
+                args.concurrency = int(token)
+                leftovers.remove(token)
+
+        # Remaining tokens could form a cookie file path (e.g. /kaggle/input/.../cookies (1).txt)
+        if leftovers and not args.cookies:
+            joined_candidate = " ".join(leftovers).strip().strip("'\"")
+            if Path(joined_candidate).exists() or ".txt" in joined_candidate or "cookie" in joined_candidate.lower():
+                args.cookies = [joined_candidate]
 
     # Process cookies flag
     if args.cookies:

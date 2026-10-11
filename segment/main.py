@@ -205,9 +205,16 @@ def main():
     parser.add_argument("--dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Target Hugging Face Dataset for segmented shards (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 5)")
     parser.add_argument("--shard-threshold", "--threshold", dest="shard_threshold", type=int, default=config.SHARD_CLIP_THRESHOLD, help="Clips per Parquet shard (default: 400, ~70 MB)")
-    parser.add_argument("--once", action="store_true", help="Process a single leased batch and exit")
+    parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+
+    leftovers = list(args.extra_args) + list(unknown)
+    if leftovers:
+        for token in list(leftovers):
+            if token.startswith("@") or "youtube.com" in token or "youtu.be" in token:
+                if not args.channel:
+                    args.channel = token
 
     run_segment_pipeline(
         channel_input=args.channel,
