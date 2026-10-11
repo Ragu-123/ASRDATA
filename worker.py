@@ -262,6 +262,11 @@ class IngestionWorker:
                 'socket_timeout': 30,
                 'retries': 5,
                 'fragment_retries': 5,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
                 'extractor_args': config.YTDLP_EXTRACTOR_ARGS,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
@@ -307,12 +312,14 @@ class IngestionWorker:
                             err_msg = str(native_err)
                             current_opts = native_opts
 
-                    # 2. If Android extraction failed and COOKIE_FILE is configured: retry with cookies
+                    # 2. If mobile client extraction failed and valid COOKIE_FILE is configured: retry with cookies
                     if getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
                         print(f"[WORKER] ⚠️ Retrying {vid_id} with authenticated YouTube cookies...")
                         cookie_opts = dict(current_opts)
                         cookie_opts["cookiefile"] = config.COOKIE_FILE
                         cookie_opts.pop("extractor_args", None)
+                        cookie_opts.pop("external_downloader", None)
+                        cookie_opts.pop("external_downloader_args", None)
                         try:
                             with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
                                 return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)

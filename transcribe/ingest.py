@@ -61,8 +61,8 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         'fragment_retries': 5,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'android_vr'],
-                'player_skip': ['web', 'tv', 'web_embedded']
+                'player_client': ['android', 'ios'],
+                'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
             }
         },
         'postprocessors': [{
@@ -80,7 +80,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
 
     return opts
 
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr;player_skip=web,tv,web_embedded"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios;player_skip=web,tv,web_embedded,android_vr"'
 
 def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None, telegram_bot: Optional[Any] = None) -> Optional[Path]:
     """

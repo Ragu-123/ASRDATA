@@ -437,8 +437,8 @@ class SegmentCoordinator:
             'playlistend': limit,
             'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'android_vr'],
-                    'player_skip': ['web', 'tv', 'web_embedded']
+                    'player_client': ['android', 'ios'],
+                    'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
                 }
             })
         }

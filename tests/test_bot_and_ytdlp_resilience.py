@@ -165,14 +165,13 @@ class TestBotAndYtdlpResilience(unittest.TestCase):
 
     # 5. YT-DLP PLAYER_CLIENT CONFIGURATION ACROSS MODULES
     def test_ytdlp_player_clients_include_android_and_ios(self):
-        """Verify yt-dlp options across all downloaders include android, ios, and android_vr."""
+        """Verify yt-dlp options across all downloaders include android, ios."""
         from transcribe.ingest import get_ytdlp_audio_opts
         opts = get_ytdlp_audio_opts("test.%(ext)s")
         clients = opts["extractor_args"]["youtube"]["player_client"]
         skips = opts["extractor_args"]["youtube"]["player_skip"]
         self.assertIn("android", clients)
         self.assertIn("ios", clients)
-        self.assertIn("android_vr", clients)
         self.assertIn("web", skips)
         self.assertIn("ba/b", opts["format"])
 

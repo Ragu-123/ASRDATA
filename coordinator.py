@@ -419,8 +419,8 @@ class ClusterCoordinator:
                     'playliststart': start_idx,
                     'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                         'youtube': {
-                            'player_client': ['android', 'ios', 'android_vr'],
-                            'player_skip': ['web', 'tv', 'web_embedded']
+                            'player_client': ['android', 'ios'],
+                            'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
                         }
                     })
                 }
@@ -843,11 +843,12 @@ class ClusterCoordinator:
             'no_warnings': True,
             'playlistend': 5000,
             'socket_timeout': 30,
-            'extractor_args': {
+            'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'android_vr']
+                    'player_client': ['android', 'ios'],
+                    'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
                 }
-            }
+            })
         }
         catalog = []
         try:

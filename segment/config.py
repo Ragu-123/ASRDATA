@@ -71,10 +71,49 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
-# Cookie File Detection (Kaggle secrets, inputs, .env, or local cookies.txt)
+# Cookie File Detection & Live Validation
 COOKIE_FILE = None
 
-def set_cookie_file(path_str: str) -> Optional[str]:
+def validate_youtube_cookies(path_or_str: str) -> bool:
+    """Validate whether YouTube cookies file has valid authenticated credentials
+    without downloading any videos.
+    """
+    p = Path(str(path_or_str).strip().strip("'\""))
+    if not p.exists() or not p.is_file() or p.stat().st_size < 10:
+        return False
+    try:
+        import http.cookiejar
+        import urllib.request
+        cj = http.cookiejar.MozillaCookieJar()
+        cj.load(str(p), ignore_discard=True, ignore_expires=True)
+        has_auth = any(
+            c.name in ("LOGIN_INFO", "SID", "__Secure-1PSID", "__Secure-3PSID") and "youtube" in c.domain
+            for c in cj
+        )
+        if not has_auth:
+            return False
+
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        opener.addheaders = [
+            ('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
+        ]
+        req = urllib.request.Request("https://www.youtube.com/")
+        with opener.open(req, timeout=4) as resp:
+            content = resp.read(65536).decode('utf-8', errors='ignore')
+            return '"LOGGED_IN":true' in content or '"isLoggedIn":true' in content
+    except Exception:
+        try:
+            import http.cookiejar
+            cj = http.cookiejar.MozillaCookieJar()
+            cj.load(str(p), ignore_discard=True, ignore_expires=True)
+            return any(
+                c.name in ("LOGIN_INFO", "SID", "__Secure-1PSID") and "youtube" in c.domain and not c.is_expired()
+                for c in cj
+            )
+        except Exception:
+            return False
+
+def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
     global COOKIE_FILE
     if not path_str:
         return COOKIE_FILE
@@ -89,6 +128,16 @@ def set_cookie_file(path_str: str) -> Optional[str]:
                     p = target
             except Exception:
                 pass
+
+        if validate:
+            is_valid = validate_youtube_cookies(str(p.resolve()))
+            if not is_valid:
+                print(f"[CONFIG] ⚠️ Notice: YouTube cookies in '{p.name}' are expired or unauthenticated. "
+                      f"Bypassing cookies to use Android/iOS client bypass (which reliably avoids bot challenges).")
+                COOKIE_FILE = None
+                os.environ.pop("COOKIE_FILE", None)
+                return None
+
         COOKIE_FILE = str(p.resolve())
         os.environ["COOKIE_FILE"] = COOKIE_FILE
         return COOKIE_FILE
@@ -128,11 +177,11 @@ if not COOKIE_FILE:
 # yt-dlp Bot Detection Bypass Extractor Args
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios", "android_vr"],
-        "player_skip": ["web", "tv", "web_embedded"]
+        "player_client": ["android", "ios"],
+        "player_skip": ["web", "tv", "web_embedded", "android_vr"]
     }
 }
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,android_vr;player_skip=web,tv,web_embedded"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios;player_skip=web,tv,web_embedded,android_vr"'
 
 # Default Seed Channels if catalog is empty
 DEFAULT_CHANNELS = [
