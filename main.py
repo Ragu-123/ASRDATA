@@ -47,14 +47,25 @@ def main():
     coordinator = ClusterCoordinator(api=api, bucket_id=config.BUCKET_ID, node_id=config.NODE_ID)
     bucket_sync = BucketSync(api=api, coordinator=coordinator)
 
-    # 3. Start Cloudflare Tunnel
+    # 3. Initialize Telegram Bot
+    telegram_bot = None
+    if config.TELEGRAM_BOT_TOKEN:
+        try:
+            from transcribe.telegram_bot import TelegramClusterBot
+            telegram_bot = TelegramClusterBot(token=config.TELEGRAM_BOT_TOKEN, coordinator=coordinator)
+            telegram_bot.start_background_thread()
+            print("[BOOT] Telegram cluster monitor bot connected and running.")
+        except Exception as e:
+            print(f"[BOOT] Notice starting Telegram bot: {e}")
+
+    # 4. Start Cloudflare Tunnel
     tunnel = CloudflareTunnel(port=config.PORT)
     tunnel_url = tunnel.start()
 
-    # 4. Initialize Worker
+    # 5. Initialize Worker
     worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, tunnel_url=tunnel_url)
 
-    # 5. Connect references to FastAPI app
+    # 6. Connect references to FastAPI app
     app.coordinator_ref = coordinator
     app.worker_ref = worker
 
@@ -64,6 +75,8 @@ def main():
         worker.stop()
         coordinator.deregister_worker()
         tunnel.stop()
+        if telegram_bot:
+            telegram_bot.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown_handler)
@@ -84,6 +97,8 @@ def main():
         worker.stop()
         coordinator.deregister_worker()
         tunnel.stop()
+        if telegram_bot:
+            telegram_bot.stop()
 
 if __name__ == "__main__":
     main()

@@ -3,15 +3,53 @@ import sys
 import uuid
 from pathlib import Path
 
-# --- Storage & Bucket Configuration ---
+# --- Two-Tier Storage & Target Settings ---
+# Tier 1: Lightweight tracking bucket (< 5 MB total). Zero audio files.
+TRACKING_BUCKET = os.getenv("TRACKING_BUCKET", "King758/asr-tracking-01")
 SOURCE_BUCKET = os.getenv("SOURCE_BUCKET", "King758/media-archive-01")
-TARGET_BUCKET = os.getenv("TARGET_BUCKET", "King758/asr-transcripts-01")
+TARGET_BUCKET = TRACKING_BUCKET  # Alias for backward compatibility
+
+# Tier 2: Hugging Face Dataset storing Apache Parquet shards with PyArrow audio struct
+DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
+
+# Quota & Shard Controls
+SHARD_CLIP_THRESHOLD = int(os.getenv("SHARD_CLIP_THRESHOLD", "400"))  # ~300-500 clips (~70 MB)
+MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "1.0"))       # Strictly under 1.0 GB local disk
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
+TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID", os.getenv("ADMIN_USER_ID", os.getenv("TELEGRAM_CHAT_ID", "5959376217")))
+TELEGRAM_ADMIN_PASSCODE = os.getenv("TELEGRAM_ADMIN_PASSCODE", os.getenv("ADMIN_PASSCODE", ""))
 
 # Runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")
 WORKING_DIR = Path("/kaggle/working" if IS_KAGGLE else "./data").resolve()
 STAGING_DIR = WORKING_DIR / "transcribe_staging"
 STAGING_DIR.mkdir(parents=True, exist_ok=True)
+SHARDS_DIR = WORKING_DIR / "shards"
+SHARDS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Default Seed Channels for Upfront Scraping
+DEFAULT_CHANNELS = [
+    {
+        "id": "madangowri",
+        "name": "Madan Gowri",
+        "url": "https://www.youtube.com/@madangowri/videos",
+        "active": True
+    },
+    {
+        "id": "TheBookShowbyrjananthi",
+        "name": "The Book Show by Ananthi",
+        "url": "https://www.youtube.com/@TheBookShowbyrjananthi/videos",
+        "active": True
+    },
+    {
+        "id": "savukkumedianetwork",
+        "name": "Savukku Media Network",
+        "url": "https://www.youtube.com/@savukkumedianetwork/videos",
+        "active": True
+    }
+]
 
 # Gemini Canvas Proxy Configuration
 DEFAULT_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "")

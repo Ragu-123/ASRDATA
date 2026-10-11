@@ -4,8 +4,14 @@ import uuid
 import time
 from pathlib import Path
 
-# --- Storage & Target Settings ---
-BUCKET_ID = os.getenv("BUCKET_ID", "King758/media-archive-01")
+# --- Storage & Target Settings (Two-Tier Architecture) ---
+TRACKING_BUCKET = os.getenv("TRACKING_BUCKET", "King758/asr-tracking-01")
+DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
+BUCKET_ID = os.getenv("BUCKET_ID", TRACKING_BUCKET)
+
+# Telegram Bot Settings
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
+TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID", os.getenv("ADMIN_USER_ID", os.getenv("TELEGRAM_CHAT_ID", "5959376217")))
 
 # Determine runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")

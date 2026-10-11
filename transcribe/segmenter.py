@@ -10,32 +10,87 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import yt_dlp
 from huggingface_hub import HfApi
 import transcribe.config as config
 
 class AudioSegmenter:
     """
-    Downloads raw YouTube audio from source HF bucket,
+    Downloads raw YouTube audio (from source HF bucket or direct YouTube stream),
     detects speech pauses via fast ffmpeg silence detection,
     and extracts clean 5-15s clips for Gemini Canvas Proxy without Whisper.
     """
     def __init__(self, api: HfApi):
         self.api = api
 
-    def download_source_audio(self, filename: str, dest_dir: Path) -> Optional[Path]:
-        """Download raw audio file from King758/media-archive-01."""
-        dest_path = dest_dir / filename
-        remote_path = f"audios/{filename}"
+    def fetch_audio(self, video_id: str, dest_dir: Path, filename: Optional[str] = None) -> Optional[Path]:
+        """
+        Retrieves audio for a video:
+        1. Checks source bucket if configured.
+        2. If not found in source bucket, downloads audio directly from YouTube via yt-dlp
+           (using player_client=['android', 'ios'] to eliminate 403 Forbidden).
+        """
+        fname = filename or f"{video_id}.m4a"
+        dest_path = dest_dir / fname
+
+        # 1. Try downloading from source bucket if configured
+        if config.SOURCE_BUCKET:
+            try:
+                remote_path = f"audios/{fname}"
+                self.api.download_bucket_files(
+                    bucket_id=config.SOURCE_BUCKET,
+                    files=[(remote_path, dest_path)]
+                )
+                if dest_path.exists() and dest_path.stat().st_size > 10000:
+                    return dest_path
+            except Exception:
+                pass
+
+        # 2. Download directly from YouTube
+        print(f"[SEGMENTER] Downloading audio directly from YouTube: {video_id}...")
+        ydl_opts = {
+            'format': 'ba[ext=m4a]/ba[ext=opus]/ba',
+            'outtmpl': str(dest_dir / f"{video_id}.%(ext)s"),
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 4,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios']
+                }
+            },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a',
+                'preferredquality': '128',
+            }],
+        }
         try:
-            self.api.download_bucket_files(
-                bucket_id=config.SOURCE_BUCKET,
-                files=[(remote_path, dest_path)]
-            )
-            if dest_path.exists() and dest_path.stat().st_size > 10000:
-                return dest_path
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+
+            matching = list(dest_dir.glob(f"{video_id}.*"))
+            if matching:
+                filepath = matching[0]
+                if filepath.suffix.lower() != ".m4a":
+                    audio_target = dest_dir / f"{video_id}.m4a"
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(filepath), "-vn", "-c:a", "copy", str(audio_target)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
+                    )
+                    filepath.unlink(missing_ok=True)
+                    filepath = audio_target
+                if filepath.exists() and filepath.stat().st_size > 10000:
+                    return filepath
         except Exception as e:
-            print(f"[SEGMENTER] Error downloading {remote_path}: {e}")
+            print(f"[SEGMENTER] Error downloading {video_id} from YouTube: {e}")
         return None
+
+    def download_source_audio(self, filename: str, dest_dir: Path) -> Optional[Path]:
+        """Download raw audio file from source bucket or YouTube."""
+        video_id = Path(filename).stem
+        return self.fetch_audio(video_id=video_id, dest_dir=dest_dir, filename=filename)
 
     def get_audio_duration(self, audio_path: Path) -> float:
         """Get audio duration in seconds using ffprobe or ffmpeg."""

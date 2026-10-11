@@ -1,3 +1,4 @@
+import re
 import json
 import time
 import shutil
@@ -637,3 +638,111 @@ class ClusterCoordinator:
                 if t_path.exists():
                     t_path.unlink()
         return None
+
+    @staticmethod
+    def parse_channel_info(url_or_handle: str, name: Optional[str] = None) -> tuple:
+        """Parses (channel_id, normalized_url, channel_name) reliably from any URL or handle."""
+        raw = url_or_handle.strip().rstrip("/")
+        if not raw.startswith("http"):
+            handle = raw.lstrip("@")
+            ch_id = handle
+            norm_url = f"https://www.youtube.com/@{handle}/videos"
+        else:
+            m = re.search(r"@([a-zA-Z0-9_\-\.]+)", raw)
+            if m:
+                ch_id = m.group(1)
+                norm_url = f"https://www.youtube.com/@{ch_id}/videos"
+            else:
+                parts = raw.split("/")
+                last_part = parts[-1]
+                if last_part.lower() == "videos" and len(parts) > 1:
+                    last_part = parts[-2]
+                ch_id = last_part.replace("@", "") if last_part != "www.youtube.com" else f"ch_{int(time.time())}"
+                norm_url = raw if raw.endswith("/videos") else f"{raw}/videos"
+        ch_name = name or ch_id
+        return ch_id, norm_url, ch_name
+
+    def scrape_channel_catalog(self, url_or_handle: str, name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Upfront channel catalog scraping: extracts all videos once and saves to catalogs/{channel_id}.json."""
+        ch_id, norm_url, ch_name = self.parse_channel_info(url_or_handle, name)
+        catalog_path = f"catalogs/{ch_id}.json"
+
+        print(f"[COORDINATOR] Upfront scraping catalog for '{ch_name}' ({norm_url})...")
+        ydl_opts = {
+            'extract_flat': True,
+            'quiet': True,
+            'no_warnings': True,
+            'playlistend': 5000,
+            'socket_timeout': 30,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios']
+                }
+            }
+        }
+        catalog = []
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(norm_url, download=False)
+                entries = info.get("entries", []) if info else []
+
+            seen_ids = set()
+            for e in entries:
+                v_id = e.get("id")
+                if v_id and v_id not in seen_ids:
+                    seen_ids.add(v_id)
+                    catalog.append({
+                        "id": v_id,
+                        "title": e.get("title", ""),
+                        "duration": e.get("duration", 0),
+                        "channel": ch_name
+                    })
+
+            self.catalog_cache[ch_id] = catalog
+            with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                json.dump(catalog, tmp, indent=2, ensure_ascii=False)
+                tmp_path = Path(tmp.name)
+            try:
+                self.api.batch_bucket_files(bucket_id=self.bucket_id, add=[(tmp_path, catalog_path)])
+                print(f"[COORDINATOR] Saved upfront catalog to {catalog_path} ({len(catalog)} videos).")
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+
+            self.add_channel(norm_url, ch_name)
+        except Exception as e:
+            print(f"[COORDINATOR] Error scraping upfront catalog: {e}")
+
+        return catalog
+
+    def get_telegram_admin(self) -> Optional[Dict[str, Any]]:
+        """Retrieve locked admin identity from tracking bucket."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            t_path = Path(tmp.name)
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            paths = {it.path for it in tree}
+            if "telegram_admin.json" in paths:
+                self.api.download_bucket_files(bucket_id=self.bucket_id, files=[("telegram_admin.json", t_path)])
+                with open(t_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        finally:
+            if t_path.exists():
+                t_path.unlink()
+        return None
+
+    def save_telegram_admin(self, admin_data: Dict[str, Any]):
+        """Persist locked admin identity in tracking bucket so all nodes recognize it."""
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+            json.dump(admin_data, tmp, indent=2)
+            tmp_path = Path(tmp.name)
+        try:
+            self.api.batch_bucket_files(
+                bucket_id=self.bucket_id,
+                add=[(tmp_path, "telegram_admin.json")]
+            )
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
