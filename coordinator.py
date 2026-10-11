@@ -204,6 +204,172 @@ class ClusterCoordinator:
         self.save_channels(channels)
         return True
 
+    @staticmethod
+    def parse_channel_info(url_or_handle: str, name: Optional[str] = None) -> tuple:
+        """
+        Parses (channel_id, normalized_url, channel_name) reliably from any URL or handle.
+        """
+        raw = url_or_handle.strip().rstrip("/")
+        if not raw.startswith("http"):
+            handle = raw.lstrip("@")
+            ch_id = handle
+            norm_url = f"https://www.youtube.com/@{handle}/videos"
+        else:
+            m = re.search(r"@([a-zA-Z0-9_\-\.]+)", raw)
+            if m:
+                ch_id = m.group(1)
+                norm_url = f"https://www.youtube.com/@{ch_id}/videos"
+            else:
+                parts = raw.split("/")
+                last_part = parts[-1]
+                if last_part.lower() == "videos" and len(parts) > 1:
+                    last_part = parts[-2]
+                ch_id = last_part.replace("@", "") if last_part != "www.youtube.com" else f"ch_{int(time.time())}"
+                norm_url = raw if raw.endswith("/videos") else f"{raw}/videos"
+
+        ch_name = name or ch_id
+        return ch_id, norm_url, ch_name
+
+    def delete_channel(self, url_or_handle: str) -> Dict[str, Any]:
+        """
+        Deletes a channel, its catalog, and its manifest records from tracking bucket.
+        """
+        ch_id, _, ch_name = self.parse_channel_info(url_or_handle)
+
+        # 1. Update channels.json
+        channels = self.load_channels()
+        remaining_channels = []
+        removed_count = 0
+        target_name = ch_name
+        for ch in channels:
+            if (ch.get("id") == ch_id or 
+                ch.get("name", "").lower() == ch_id.lower() or 
+                ch.get("name", "").lower() == url_or_handle.lower() or 
+                ch_id in ch.get("url", "")):
+                removed_count += 1
+                target_name = ch.get("name", ch_id)
+            else:
+                remaining_channels.append(ch)
+
+        if removed_count > 0 or len(channels) != len(remaining_channels):
+            self.save_channels(remaining_channels)
+
+        # 2. Delete catalog from bucket and find video IDs in it
+        catalog = self.catalog_cache.get(ch_id, [])
+        catalog_path = f"catalogs/{ch_id}.json"
+        cat_vid_ids = {v.get("id") for v in catalog if v.get("id")}
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            tree_paths = {it.path for it in tree}
+            if catalog_path in tree_paths and not cat_vid_ids:
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    t_path = Path(tmp.name)
+                try:
+                    self.api.download_bucket_files(bucket_id=self.bucket_id, files=[(catalog_path, t_path)])
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                    cat_vid_ids = {v.get("id") for v in c_data if v.get("id")}
+                except Exception:
+                    pass
+                finally:
+                    if t_path.exists():
+                        t_path.unlink()
+
+            if catalog_path in tree_paths:
+                self.api.batch_bucket_files(bucket_id=self.bucket_id, delete=[catalog_path])
+        except Exception as e:
+            print(f"[COORDINATOR] Catalog deletion notice: {e}")
+
+        self.catalog_cache.pop(ch_id, None)
+
+        # 3. Clean manifest.json
+        manifest = self.load_manifest()
+        completed_dict = manifest.get("completed", {}) or manifest.get("completed_videos", {})
+        keys_to_remove = []
+        for vid, v_info in list(completed_dict.items()):
+            ch_val = v_info.get("channel") or v_info.get("channel_name") or ""
+            if ch_val == target_name or ch_val == ch_id or vid in cat_vid_ids:
+                keys_to_remove.append(vid)
+
+        for k in keys_to_remove:
+            if "completed" in manifest and k in manifest["completed"]:
+                del manifest["completed"][k]
+            if "completed_videos" in manifest and k in manifest["completed_videos"]:
+                del manifest["completed_videos"][k]
+
+        active_completed = manifest.get("completed", manifest.get("completed_videos", {}))
+        manifest["total_videos"] = len(active_completed)
+        manifest["total_hours"] = round(sum(v.get("duration", v.get("duration_seconds", 0)) for v in active_completed.values()) / 3600.0, 2)
+        if "total_segments" in manifest:
+            manifest["total_segments"] = sum(v.get("segments_count", 0) for v in active_completed.values())
+        manifest["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        self.save_manifest(manifest)
+
+        # 4. Clean segment_manifest.json if present
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            if any(it.path == "segment_manifest.json" for it in tree):
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    sm_path = Path(tmp.name)
+                try:
+                    self.api.download_bucket_files(bucket_id=self.bucket_id, files=[("segment_manifest.json", sm_path)])
+                    with open(sm_path, "r", encoding="utf-8") as f:
+                        sm = json.load(f)
+                    sm_completed = sm.get("completed_videos", {})
+                    sm_rem = [vid for vid, v in sm_completed.items() if (v.get("channel") == target_name or v.get("channel_name") == target_name or v.get("channel") == ch_id or vid in cat_vid_ids)]
+                    for vid in sm_rem:
+                        del sm_completed[vid]
+                    sm["total_videos"] = len(sm_completed)
+                    sm["total_segments"] = sum(v.get("segments_count", 0) for v in sm_completed.values())
+                    sm["total_hours"] = round(sum(v.get("duration_seconds", 0) for v in sm_completed.values()) / 3600.0, 2)
+                    sm["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    with open(sm_path, "w", encoding="utf-8") as f:
+                        json.dump(sm, f, indent=2)
+                    self.api.batch_bucket_files(bucket_id=self.bucket_id, add=[(sm_path, "segment_manifest.json")])
+                finally:
+                    if sm_path.exists():
+                        sm_path.unlink()
+        except Exception:
+            pass
+
+        return {
+            "channel_id": ch_id,
+            "channel_name": target_name,
+            "channels_removed": removed_count,
+            "catalog_videos_removed": len(cat_vid_ids),
+            "manifest_videos_removed": len(keys_to_remove),
+            "remaining_total_videos": manifest["total_videos"],
+            "remaining_total_hours": manifest["total_hours"]
+        }
+
+    def delete_manifest(self) -> bool:
+        """Resets manifest.json and segment_manifest.json in tracking bucket to empty."""
+        empty_manifest = {
+            "completed": {},
+            "completed_videos": {},
+            "total_videos": 0,
+            "total_segments": 0,
+            "total_hours": 0.0,
+            "shards": [],
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.save_manifest(empty_manifest)
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.bucket_id))
+            if any(it.path == "segment_manifest.json" for it in tree):
+                with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                    json.dump(empty_manifest, tmp, indent=2)
+                    sm_p = Path(tmp.name)
+                try:
+                    self.api.batch_bucket_files(bucket_id=self.bucket_id, add=[(sm_p, "segment_manifest.json")])
+                finally:
+                    if sm_p.exists():
+                        sm_p.unlink()
+        except Exception:
+            pass
+        return True
+
     # --- CENTRALIZED METADATA CATALOG ---
     def get_channel_catalog(self, channel: Dict[str, Any], needed_uncompleted: int = 150) -> List[Dict[str, Any]]:
         """
@@ -440,6 +606,7 @@ class ClusterCoordinator:
 
         hb_payload = {
             "worker_id": self.node_id,
+            "stage": "ingest",
             "status": status,
             "tunnel_url": tunnel_url,
             "active_streams": active_streams,

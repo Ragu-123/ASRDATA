@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import json
+import tempfile
 import threading
 from collections import deque
 from pathlib import Path
@@ -50,6 +51,8 @@ class TelegramClusterBot:
 
         # In-memory recent error buffer for /errors command
         self.recent_errors: deque = deque(maxlen=25)
+        self._stalled_alerted: set = set()
+        self._last_watchdog_check: float = 0.0
 
         # Initialize admin identity
         self._load_admin_identity(preconfigured_id=admin_id or config.TELEGRAM_ADMIN_ID)
@@ -201,13 +204,15 @@ class TelegramClusterBot:
         )
         return self.send_message(msg)
 
-    def send_error_alert(self, worker_id: str, video_id: str, error_msg: str):
-        """Proactive alert for pipeline failures or Cloudflare 502 exhaustion."""
+    def send_error_alert(self, worker_id: str, video_id: str, error_msg: str, traceback_str: str = ""):
+        """Proactive alert for pipeline failures or Cloudflare 502 exhaustion with traceback."""
+        tb_block = f"\n\nTraceback:\n`{traceback_str[-350:]}`" if traceback_str else ""
         msg = (
             f"❌ *Cluster Error Notice*\n\n"
             f"• *Node*: `{worker_id}`\n"
             f"• *Video*: `{video_id}`\n"
             f"• *Error*: `{str(error_msg)[:250]}`"
+            f"{tb_block}"
         )
         return self.send_message(msg)
 
@@ -297,6 +302,10 @@ class TelegramClusterBot:
             return self._cmd_flush()
         elif command == "/stop":
             return self._cmd_stop()
+        elif command in ["/delete_channel", "/del_channel", "/remove_channel"]:
+            return self._cmd_delete_channel(args)
+        elif command in ["/delete_manifest", "/reset_manifest"]:
+            return self._cmd_delete_manifest(args)
         elif command == "/admin":
             return self._cmd_admin()
         else:
@@ -319,6 +328,8 @@ class TelegramClusterBot:
             f"*Available Commands:*\n"
             f"📊 `/status` — Live cluster overview, active nodes & dataset progress\n"
             f"➕ `/add_channel <url>` — Scrape & queue a YouTube channel upfront\n"
+            f"🗑️ `/delete_channel <url>` — Delete a channel, catalog & its manifest records\n"
+            f"🗑️ `/delete_manifest` — Reset/clear tracking manifest records in bucket\n"
             f"⚠️ `/errors` — View recent cluster error logs\n"
             f"⏸️ `/pause` — Pause ingestion & transcription across cluster\n"
             f"▶️ `/resume` — Resume cluster operations\n"
@@ -334,44 +345,95 @@ class TelegramClusterBot:
         try:
             overview = self.coordinator.get_cluster_overview()
             manifest = self.coordinator.load_manifest(force=True)
-
-            node_count = overview.get("node_count", 0)
             live_workers = overview.get("live_workers", [])
-            total_hours = overview.get("total_harvested_hours", 0.0)
-            completed_vids = overview.get("total_completed_videos", 0)
-            total_segments = manifest.get("total_segments", 0)
-            shards_count = len(manifest.get("shards", []))
+            bucket = getattr(self.coordinator, "tracking_bucket", getattr(self.coordinator, "bucket_id", config.TRACKING_BUCKET))
 
-            # Channel catalog stats
-            channels = self.coordinator.load_channels()
-            cat_summary = []
-            for ch in channels:
-                ch_id = ch["id"]
-                catalog = self.coordinator.catalog_cache.get(ch_id, [])
-                cat_summary.append(f"• *{ch.get('name', ch_id)}*: {len(catalog)} videos")
+            # Fetch segment_manifest.json if present
+            seg_manifest = {"total_videos": 0, "total_segments": 0, "total_hours": 0.0, "shards": []}
+            if hasattr(self.coordinator, "api"):
+                try:
+                    tree = list(self.coordinator.api.list_bucket_tree(bucket_id=bucket))
+                    if any(it.path == "segment_manifest.json" for it in tree):
+                        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                            sm_p = Path(tmp.name)
+                        try:
+                            self.coordinator.api.download_bucket_files(bucket_id=bucket, files=[("segment_manifest.json", sm_p)])
+                            with open(sm_p, "r", encoding="utf-8") as f:
+                                seg_manifest = json.load(f)
+                        finally:
+                            if sm_p.exists():
+                                sm_p.unlink()
+                except Exception:
+                    pass
 
-            # Workers details
-            w_lines = []
+            # Classify workers by stage
+            ingest_workers = []
+            segment_workers = []
+            transcribe_workers = []
+
             for w in live_workers:
-                w_id = w.get("worker_id", "node")
-                w_status = w.get("status", "idle")
-                w_disk = w.get("disk", {}).get("used_gb", 0.0)
-                w_lines.append(f"• `{w_id}`: *{w_status}* | Disk: {w_disk:.1f}GB")
+                stage = w.get("stage", "")
+                w_id = w.get("worker_id", "")
+                if stage == "ingest" or w_id.startswith("node-"):
+                    ingest_workers.append(w)
+                elif stage == "segment" or w_id.startswith("segmenter-"):
+                    segment_workers.append(w)
+                elif stage == "transcribe" or w_id.startswith("transcriber-"):
+                    transcribe_workers.append(w)
+                else:
+                    transcribe_workers.append(w)
 
-            worker_text = "\n".join(w_lines) if w_lines else "• No active workers online"
-            cat_text = "\n".join(cat_summary) if cat_summary else "• None"
+            # Stage 1: Ingest lines
+            raw_vids = len(manifest.get("completed", {})) or manifest.get("total_videos", 0)
+            in_lines = []
+            for w in ingest_workers:
+                cur_v = w.get("current_video", {}).get("id") or w.get("current_video", {}).get("title") or "waiting"
+                speed = w.get("speed", "")
+                sp_str = f" ({speed})" if speed else ""
+                in_lines.append(f"  • `{w['worker_id']}`: *{w.get('status','idle')}* | {cur_v}{sp_str}")
+            in_text = "\n".join(in_lines) if in_lines else "  • No active ingest workers online"
+
+            # Stage 2: Segment lines
+            seg_vids = seg_manifest.get("total_videos", 0)
+            seg_clips = seg_manifest.get("total_segments", 0)
+            seg_shards = len(seg_manifest.get("shards", []))
+            sg_lines = []
+            for w in segment_workers:
+                cur_v = w.get("current_video", {}).get("video_id") or "idle"
+                sg_lines.append(f"  • `{w['worker_id']}`: *{w.get('status','idle')}* | Video: {cur_v}")
+            sg_text = "\n".join(sg_lines) if sg_lines else "  • No active segment workers online"
+
+            # Stage 3: Transcribe lines
+            trans_clips = manifest.get("total_segments", 0)
+            trans_hours = manifest.get("total_hours", 0.0)
+            trans_shards = len(manifest.get("shards", []))
+            tr_lines = []
+            for w in transcribe_workers:
+                cur_v = w.get("current_video", {}).get("video_id") or w.get("current_video", {}).get("segment_id") or "active"
+                tr_lines.append(f"  • `{w['worker_id']}`: *{w.get('status','idle')}* | Clip: {cur_v}")
+            tr_text = "\n".join(tr_lines) if tr_lines else "  • No active transcribe workers online"
 
             return (
-                f"📊 *Tamil ASR Cluster Status*\n\n"
-                f"• *Active Nodes*: `{node_count}`\n"
-                f"• *Harvested Speech*: `{total_hours:.2f} hrs`\n"
-                f"• *Transcribed Videos*: `{completed_vids}`\n"
-                f"• *Audited Segments*: `{total_segments}`\n"
-                f"• *Parquet Shards*: `{shards_count}`\n"
-                f"• *Dataset*: `{config.DATASET_REPO}`\n"
-                f"• *Tracking Bucket*: `{config.TRACKING_BUCKET}`\n\n"
-                f"💻 *Active Workers:*\n{worker_text}\n\n"
-                f"📺 *Channels Catalog:*\n{cat_text}"
+                f"📊 *Tamil ASR Cluster Status & Overview (3 Stages)*\n\n"
+                f"• *Active Nodes*: `{len(live_workers)}`\n"
+                f"• *Tracking Bucket*: `{bucket}`\n"
+                f"• *Audited Corpus*: `{config.DATASET_REPO}`\n\n"
+                f"📥 *Stage 1: Raw Ingest (`main.py`)*\n"
+                f"• Active Workers: `{len(ingest_workers)}`\n"
+                f"• Raw Audios Ingested: `{raw_vids}` videos\n"
+                f"{in_text}\n\n"
+                f"✂️ *Stage 2: Silence Segmentation (`segment.py`)*\n"
+                f"• Active Workers: `{len(segment_workers)}`\n"
+                f"• Videos Segmented: `{seg_vids}`\n"
+                f"• 10s Clips Built: `{seg_clips}`\n"
+                f"• Parquet Shards Uploaded: `{seg_shards}`\n"
+                f"{sg_text}\n\n"
+                f"🎙️ *Stage 3: Transcription (`transcribe.py`)*\n"
+                f"• Active Workers: `{len(transcribe_workers)}`\n"
+                f"• Audited Speech: `{trans_hours:.2f} hrs`\n"
+                f"• Audited Clips: `{trans_clips}`\n"
+                f"• Final Parquet Shards: `{trans_shards}`\n"
+                f"{tr_text}"
             )
         except Exception as e:
             return f"⚠️ Error generating cluster status: {e}"
@@ -451,6 +513,56 @@ class TelegramClusterBot:
             f"• *Unauthorized Access*: Rejection Active"
         )
 
+    def _cmd_delete_channel(self, args: List[str]) -> str:
+        if not args:
+            return "Usage: `/delete_channel <url_or_handle>`\nExample: `/delete_channel @madangowri`"
+        if not self.coordinator:
+            return "⚠️ Coordinator is not connected."
+
+        target = args[0].strip()
+        try:
+            if hasattr(self.coordinator, "delete_channel"):
+                res = self.coordinator.delete_channel(target)
+                ch_id = res.get("channel_id", target)
+                ch_name = res.get("channel_name", ch_id)
+                cat_del = res.get("catalog_videos_removed", 0)
+                man_del = res.get("manifest_videos_removed", 0)
+                rem_vids = res.get("remaining_total_videos", 0)
+                rem_hrs = res.get("remaining_total_hours", 0.0)
+                bucket = getattr(self.coordinator, "tracking_bucket", getattr(self.coordinator, "bucket_id", config.TRACKING_BUCKET))
+
+                return (
+                    f"🗑️ *Channel & Manifest Cleaned!*\n\n"
+                    f"• *Channel*: `{ch_name}` (`{ch_id}`)\n"
+                    f"• *Catalog*: Removed from bucket (`{cat_del}` videos purged)\n"
+                    f"• *Manifest*: Removed `{man_del}` completed video records\n"
+                    f"• *Remaining Videos*: `{rem_vids}`\n"
+                    f"• *Remaining Speech*: `{rem_hrs:.2f} hrs`\n"
+                    f"• *Tracking Bucket*: `{bucket}` (Updated)"
+                )
+            else:
+                return "⚠️ Current coordinator does not support delete_channel."
+        except Exception as e:
+            return f"❌ Error deleting channel `{target}`: {e}"
+
+    def _cmd_delete_manifest(self, args: List[str]) -> str:
+        if not self.coordinator:
+            return "⚠️ Coordinator is not connected."
+        try:
+            if hasattr(self.coordinator, "delete_manifest"):
+                self.coordinator.delete_manifest()
+                bucket = getattr(self.coordinator, "tracking_bucket", getattr(self.coordinator, "bucket_id", config.TRACKING_BUCKET))
+                return (
+                    f"🗑️ *Manifest Reset Complete!*\n\n"
+                    f"• *Manifests Reset*: `manifest.json` & `segment_manifest.json`\n"
+                    f"• *Tracking Bucket*: `{bucket}`\n"
+                    f"• *Status*: All completed video records cleared. Ready for fresh harvesting!"
+                )
+            else:
+                return "⚠️ Current coordinator does not support delete_manifest."
+        except Exception as e:
+            return f"❌ Error resetting manifest: {e}"
+
     # --- POLLING ENGINE ---
 
     def poll_once(self, offset: Optional[int] = None, timeout: int = 15) -> tuple:
@@ -474,13 +586,71 @@ class TelegramClusterBot:
             time.sleep(2)
         return [], offset
 
+    def check_watchdog_stalls(self, force: bool = False):
+        """
+        Watchdog check: verifies if any active worker has had no heartbeat for > 10 minutes (600s).
+        Proactively alerts Telegram:
+        🚨 [STALL ALERT] Worker {worker_id} ({stage}) has been inactive for >10 mins on {video_id}! Check Kaggle session.
+        """
+        now = time.time()
+        if not force and (now - self._last_watchdog_check < 30.0):
+            return
+        self._last_watchdog_check = now
+
+        if not self.coordinator or not hasattr(self.coordinator, "api"):
+            return
+
+        bucket = getattr(self.coordinator, "tracking_bucket", getattr(self.coordinator, "bucket_id", config.TRACKING_BUCKET))
+        try:
+            tree = list(self.coordinator.api.list_bucket_tree(bucket_id=bucket))
+            w_paths = [it.path for it in tree if it.path.startswith("workers/") and it.path.endswith(".json")]
+            for w_path in w_paths:
+                tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+                t_path = Path(tmp.name)
+                tmp.close()
+                try:
+                    self.coordinator.api.download_bucket_files(bucket_id=bucket, files=[(w_path, t_path)])
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        w_data = json.load(f)
+                    w_id = w_data.get("worker_id", "unknown")
+                    last_hb = w_data.get("last_heartbeat", 0)
+                    status = w_data.get("status", "idle")
+                    stage = w_data.get("stage", "general")
+                    cur_vid = w_data.get("current_video", {})
+                    v_id = cur_vid.get("id") or cur_vid.get("video_id") or "unspecified"
+
+                    diff_sec = now - last_hb
+                    if 600 < diff_sec < 2400 and status not in ["idle", "paused", "offline"]:
+                        if w_id not in self._stalled_alerted:
+                            self._stalled_alerted.add(w_id)
+                            mins = int(diff_sec // 60)
+                            alert_msg = (
+                                f"🚨 *[STALL ALERT]* Worker `{w_id}` ({stage}) has been inactive for >{mins} mins on `{v_id}`!\n"
+                                f"• *Status*: `{status}`\n"
+                                f"• *Stage*: `{stage}`\n"
+                                f"• *Action*: Check Kaggle session or restart node."
+                            )
+                            self.send_message(alert_msg)
+                    elif diff_sec <= 600:
+                        self._stalled_alerted.discard(w_id)
+                except Exception:
+                    pass
+                finally:
+                    if t_path.exists():
+                        t_path.unlink()
+        except Exception:
+            pass
+
     def run_polling_loop(self):
-        """Continuous polling loop for Telegram Bot."""
+        """Continuous polling loop for Telegram Bot with watchdog monitoring."""
         print(f"[TELEGRAM BOT] Polling service started for bot token: {self.token[:10]}...")
         self.running = True
         offset = None
 
         while self.running:
+            # 1. Run watchdog stall check
+            self.check_watchdog_stalls()
+
             # Multi-node coordination: ensure only ONE node polls getUpdates to prevent HTTP 409 Conflict
             if self.coordinator and hasattr(self.coordinator, "acquire_telegram_poller_lease"):
                 worker_id = getattr(self.coordinator, "worker_id", getattr(self.coordinator, "node_id", "node"))

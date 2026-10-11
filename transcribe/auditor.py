@@ -56,18 +56,20 @@ class GeminiAuditor:
         Transcribes/audits a single 5-15s audio segment with Gemini 3 Flash.
         Strictly applies the 23 Tamil ASR rules.
         """
-        audio_path: Path = segment["audio_path"]
+        audio_path: Optional[Path] = segment.get("audio_path")
+        audio_bytes: Optional[bytes] = segment.get("audio_bytes")
         draft_text: str = segment.get("draft_text", "")
-        seg_id: str = segment["segment_id"]
+        seg_id: str = segment.get("segment_id", "seg_unknown")
 
-        if not audio_path.exists():
-            return {**segment, "audited_text": draft_text, "clean_text": draft_text, "emotion": "None", "error": "Audio file not found"}
+        if audio_bytes is None:
+            if not audio_path or not Path(audio_path).exists():
+                return {**segment, "audited_text": draft_text, "clean_text": draft_text, "emotion": "None", "error": "Audio file not found"}
+            audio_bytes = Path(audio_path).read_bytes()
 
         # Read audio bytes and convert to base64
-        audio_bytes = audio_path.read_bytes()
         b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-        fmt = audio_path.suffix.lstrip(".").lower()
-        if fmt not in ["m4a", "mp3", "wav", "aac"]:
+        fmt = segment.get("audio_format") or (Path(audio_path).suffix.lstrip(".").lower() if audio_path else "m4a")
+        if fmt not in ["m4a", "mp3", "wav", "aac", "ogg", "opus"]:
             fmt = "m4a"
 
         user_content = [
@@ -110,6 +112,11 @@ class GeminiAuditor:
                     if m:
                         emotion = m.group(1).capitalize()
                         clean_text = raw_output[:m.start()].strip()
+
+                    # Handle pure music acoustic tag
+                    if clean_text.lower() in ["[music]", "music"] or raw_output.lower() in ["[music]", "[music] [none]"]:
+                        clean_text = "[music]"
+                        emotion = "None"
 
                     return {
                         **segment,

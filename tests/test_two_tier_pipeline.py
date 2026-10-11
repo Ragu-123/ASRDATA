@@ -179,7 +179,7 @@ class TestTwoTierPipeline(unittest.TestCase):
     def test_telegram_bot_strict_authorization_and_locking(self):
         """Verify strict admin auto-locking and rejection of unauthorized strangers."""
         bot = TelegramClusterBot(
-            token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+            token="123456789:AAFakeTestTokenForUnitTestingOnly123",
             coordinator=self.coordinator
         )
 
@@ -333,7 +333,7 @@ class TestTwoTierPipeline(unittest.TestCase):
         try:
             config.TELEGRAM_ADMIN_PASSCODE = "secret_tamil_789"
             bot = TelegramClusterBot(
-                token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+                token="123456789:AAFakeTestTokenForUnitTestingOnly123",
                 coordinator=self.coordinator
             )
 
@@ -386,7 +386,7 @@ class TestTwoTierPipeline(unittest.TestCase):
     def test_stranger_cannot_claim_admin_with_non_start_command(self):
         """Verify that an unauthorized stranger cannot steal admin ownership with /status or /errors."""
         bot = TelegramClusterBot(
-            token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+            token="123456789:AAFakeTestTokenForUnitTestingOnly123",
             coordinator=self.coordinator
         )
         self.assertIsNone(bot.admin_user_id)
@@ -404,7 +404,7 @@ class TestTwoTierPipeline(unittest.TestCase):
     def test_preconfigured_admin_auto_authorization_and_stranger_rejection(self):
         """Verify that preconfigured admin ID (e.g. 5959376217) is immediately locked and strangers rejected."""
         bot = TelegramClusterBot(
-            token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+            token="123456789:AAFakeTestTokenForUnitTestingOnly123",
             admin_id="5959376217",
             coordinator=self.coordinator
         )
@@ -422,7 +422,7 @@ class TestTwoTierPipeline(unittest.TestCase):
     def test_admin_id_type_normalization(self):
         """Verify is_authorized works regardless of whether user_id is passed as int or str."""
         bot = TelegramClusterBot(
-            token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+            token="123456789:AAFakeTestTokenForUnitTestingOnly123",
             admin_id="5959376217",
             coordinator=self.coordinator
         )
@@ -476,7 +476,7 @@ class TestTwoTierPipeline(unittest.TestCase):
     def test_markdown_fallback_on_error(self):
         """Verify that send_message falls back to plain text when Markdown is rejected."""
         bot = TelegramClusterBot(
-            token="8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ",
+            token="123456789:AAFakeTestTokenForUnitTestingOnly123",
             admin_id="5959376217"
         )
 

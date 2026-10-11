@@ -9,10 +9,6 @@ TRACKING_BUCKET = os.getenv("TRACKING_BUCKET", "King758/asr-tracking-01")
 DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
 BUCKET_ID = os.getenv("BUCKET_ID", TRACKING_BUCKET)
 
-# Telegram Bot Settings
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
-TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID", os.getenv("ADMIN_USER_ID", os.getenv("TELEGRAM_CHAT_ID", "5959376217")))
-
 # Determine runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")
 WORKING_DIR = Path("/kaggle/working" if IS_KAGGLE else "./data").resolve()
@@ -21,6 +17,33 @@ STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
 # Cloudflare Binary Path
 CLOUDFLARED_BIN = WORKING_DIR / "cloudflared"
+
+# Ensure root is in sys.path
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from secret_resolver import resolve_secret
+
+# Robust secret retrieval: check env, then Kaggle secrets with exact pattern, then .env
+try:
+    from kaggle_secrets import UserSecretsClient
+    user_secrets = UserSecretsClient()
+    secret_value_0 = user_secrets.get_secret("HF_TOKEN")
+    secret_value_1 = user_secrets.get_secret("TELEGRAM_ADMIN_ID")
+    secret_value_2 = user_secrets.get_secret("TELEGRAM_BOT_TOKEN")
+    if secret_value_0 and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = str(secret_value_0).strip()
+    if secret_value_1 and not os.getenv("TELEGRAM_ADMIN_ID"):
+        os.environ["TELEGRAM_ADMIN_ID"] = str(secret_value_1).strip()
+    if secret_value_2 and not os.getenv("TELEGRAM_BOT_TOKEN"):
+        os.environ["TELEGRAM_BOT_TOKEN"] = str(secret_value_2).strip()
+except Exception:
+    pass
+
+# Telegram Bot Settings
+TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "")))
 
 # Quota & Batch Controls
 DISK_PER_NODE_GB = 19.5
@@ -68,20 +91,5 @@ DEFAULT_CHANNELS = [
 ]
 
 def get_hf_token() -> str:
-    """Retrieve Hugging Face token from Kaggle Secrets or environment variables."""
-    token = os.getenv("HF_TOKEN")
-    if token:
-        return token
-    
-    if IS_KAGGLE:
-        try:
-            from kaggle_secrets import UserSecretsClient
-            user_secrets = UserSecretsClient()
-            token = user_secrets.get_secret("HF_TOKEN")
-            if token:
-                os.environ["HF_TOKEN"] = token
-                return token
-        except Exception as e:
-            print(f"[CONFIG] Kaggle secrets retrieval warning: {e}", file=sys.stderr)
-            
-    return ""
+    """Retrieve Hugging Face token from environment, Kaggle Secrets, or local .env."""
+    return resolve_secret("HF_TOKEN", "")

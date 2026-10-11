@@ -17,7 +17,10 @@ SYSTEM_PROMPT = f"""You are a World-Class Audio Transcription Specialist for Spe
 2. SPOKEN VERBS vs LITERARY: Preserve spoken conversational verbs (e.g. வந்திருக்கான், இருக்கு, உட்காந்து, -ல). Never convert to book Tamil (e.g. வந்திருக்கிறார், இருக்கிறது, -இல்).
 3. ENGLISH NOUNS IN LATIN SCRIPT: Write English nouns in Latin script (e.g. side-ல, plate, window-க்கு).
 4. NUMBERS & SYMBOLS: Write numbers and symbols as words, never digits (0-9) or banned glyphs (%, $).
-5. EMOTION TAG: End the segment with exactly one bracketed emotion tag based on acoustic delivery: [None], [Happy], [Angry], [Sad], [Fear], [Sarcastic], [Disgust], [Surprise], or [Excited].
+5. MUSIC & ACOUSTIC RULES:
+   - If there are NO words and ONLY music or song is playing: output exactly '[music]'. Never hallucinate words or output empty text.
+   - If music is playing in the background while speech is occurring: wrap the spoken speech with <music>...spoken text...</music> (e.g. <music>இன்று வானிலை நன்றாக இருக்கிறது</music> [None]).
+6. EMOTION TAG: For speech clips, end the segment with exactly one bracketed emotion tag based on acoustic delivery: [None], [Happy], [Angry], [Sad], [Fear], [Sarcastic], [Disgust], [Surprise], or [Excited]. If the clip is pure music with NO speech, output ONLY '[music]' without an emotion tag.
 
 Return the exact audited transcription representing the audio verbatim according to the rules.
 """

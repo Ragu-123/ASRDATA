@@ -118,14 +118,16 @@ class ParquetDatasetSyncer:
             if not clean_text:
                 continue
 
-            if not chunk_path or not chunk_path.exists() or chunk_path.stat().st_size < 500:
-                continue
+            audio_bytes = s.get("audio_bytes")
+            if audio_bytes is None:
+                if not chunk_path or not chunk_path.exists() or chunk_path.stat().st_size < 500:
+                    continue
 
-            try:
-                audio_bytes = chunk_path.read_bytes()
-            except Exception as e:
-                print(f"[PARQUET SYNCER] Notice reading {chunk_path}: {e}")
-                continue
+                try:
+                    audio_bytes = chunk_path.read_bytes()
+                except Exception as e:
+                    print(f"[PARQUET SYNCER] Notice reading {chunk_path}: {e}")
+                    continue
 
             self.buffered_rows.append({
                 "audio": {"bytes": audio_bytes, "path": f"{seg_id}.m4a"},
@@ -160,6 +162,59 @@ class ParquetDatasetSyncer:
             self.flush_shard()
 
         print(f"========================================================\n")
+        return True
+
+    def sync_audited_segments(self, audited_segments: List[Dict[str, Any]], shard_id: str = "") -> bool:
+        """
+        Ingests audited segments directly into the shard buffer (e.g. from segmented Parquet shards).
+        """
+        added_clips = 0
+        for s in audited_segments:
+            seg_id = s.get("segment_id")
+            clean_text = (s.get("clean_text") or s.get("audited_text") or s.get("transcript") or "").strip()
+            dur = float(s.get("duration", 0.0))
+            emotion = s.get("emotion", "None")
+            vid_id = s.get("video_id", "unknown")
+
+            if not clean_text:
+                continue
+
+            audio_bytes = s.get("audio_bytes")
+            if audio_bytes is None:
+                chunk_path: Optional[Path] = s.get("audio_path")
+                if not chunk_path or not chunk_path.exists() or chunk_path.stat().st_size < 500:
+                    continue
+                try:
+                    audio_bytes = chunk_path.read_bytes()
+                except Exception:
+                    continue
+
+            self.buffered_rows.append({
+                "audio": {"bytes": audio_bytes, "path": f"{seg_id}.m4a"},
+                "sentence": clean_text,
+                "duration": dur,
+                "video_id": vid_id,
+                "segment_id": seg_id,
+                "emotion": emotion
+            })
+            added_clips += 1
+
+            if vid_id not in self.buffered_videos:
+                self.buffered_videos[vid_id] = {
+                    "title": s.get("title", vid_id),
+                    "channel": s.get("channel_name", "Unknown"),
+                    "duration_seconds": round(dur, 2),
+                    "segments_count": 1,
+                    "transcribed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "worker": self.worker_id
+                }
+            else:
+                self.buffered_videos[vid_id]["segments_count"] += 1
+                self.buffered_videos[vid_id]["duration_seconds"] = round(self.buffered_videos[vid_id]["duration_seconds"] + dur, 2)
+
+        print(f"[PARQUET SYNCER] Ingested {added_clips} audited clips from shard '{shard_id}' (Buffer: {len(self.buffered_rows)}/{self.shard_threshold}).")
+        if len(self.buffered_rows) >= self.shard_threshold:
+            self.flush_shard()
         return True
 
     def flush_shard(self) -> Optional[str]:

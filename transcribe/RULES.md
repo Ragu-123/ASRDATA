@@ -217,24 +217,40 @@ Distinct, unmistakable background sounds must always be wrapped in their require
 
 Use:
 
-- `<music>...</music>` for music or singing.
+- `[music]` if there are **NO words spoken** and **ONLY music, song, or instrumental audio** is playing throughout the clip.
+- `<music>...</music>` if music or singing is playing in the background **while speech is occurring**.
 - `<overlap>...</overlap>` for overlapping speech.
 
 These tags must be included whenever the acoustic event is clearly present. **Never omit a clearly identifiable hard acoustic event.**
 
-### Example: Music
+### Example: Pure Music (No Speech)
+
+**In audio:** Instrumental music or song with no transcribed Tamil speech words.
 
 **Wrong:**
 
-> இன்று வானிலை நன்றாக இருக்கிறது
+> (hallucinated text or empty output)
 
 **Correct:**
 
-> <music> இன்று வானிலை நன்றாக இருக்கிறது </music>
+> [music]
+
+### Example: Background Music with Speech
+
+**In audio:** Speaker speaking Tamil while background music is playing.
+
+**Wrong:**
+
+> இன்று வானிலை நன்றாக இருக்கிறது [None]
+
+**Correct:**
+
+> <music> இன்று வானிலை நன்றாக இருக்கிறது </music> [None]
 
 ### Rule
 
-- Tag clearly identifiable music, singing, or overlapping speech.
+- If there are NO words and ONLY music is playing: output `[music]`.
+- If music is playing in the background behind speech: wrap the speech with `<music>...</music>`.
 - Put the opening and closing tags around the relevant span.
 - Do not silently remove a hard acoustic event.
 
@@ -631,7 +647,7 @@ Before returning the final transcript, verify all **23 rules** against the audio
 6. Designated English proper nouns stayed in Latin script.
 7. Numbers were written as words, not digits.
 8. Banned symbol glyphs were not used for spoken equivalents.
-9. Hard acoustic events were tagged when unmistakable.
+9. Hard acoustic events were tagged when unmistakable: pure music without speech marked as [music], background music wrapped in <music>...</music>.
 10. Soft acoustic tags were handled as a judgment call.
 11. `?` was used only for clearly rising intonation.
 12. Ordinary punctuation differences were treated as soft/stylistic.

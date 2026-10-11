@@ -325,6 +325,147 @@ class TranscriptionCoordinator:
 
         return catalog
 
+    def delete_channel(self, url_or_handle: str) -> Dict[str, Any]:
+        """
+        Deletes a channel, its catalog, and its manifest records from tracking bucket.
+        """
+        ch_id, _, ch_name = self.parse_channel_info(url_or_handle)
+
+        # 1. Update channels.json
+        channels = self.load_channels()
+        remaining_channels = []
+        removed_count = 0
+        target_name = ch_name
+        for ch in channels:
+            if (ch.get("id") == ch_id or 
+                ch.get("name", "").lower() == ch_id.lower() or 
+                ch.get("name", "").lower() == url_or_handle.lower() or 
+                ch_id in ch.get("url", "")):
+                removed_count += 1
+                target_name = ch.get("name", ch_id)
+            else:
+                remaining_channels.append(ch)
+
+        if removed_count > 0 or len(channels) != len(remaining_channels):
+            self.save_channels(remaining_channels)
+
+        # 2. Delete catalog from bucket and get video IDs
+        catalog = self.catalog_cache.get(ch_id, [])
+        catalog_path = f"catalogs/{ch_id}.json"
+        cat_vid_ids = {v.get("id") for v in catalog if v.get("id")}
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.tracking_bucket))
+            tree_paths = {it.path for it in tree}
+            if catalog_path in tree_paths and not cat_vid_ids:
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    t_path = Path(tmp.name)
+                try:
+                    self.api.download_bucket_files(bucket_id=self.tracking_bucket, files=[(catalog_path, t_path)])
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                    cat_vid_ids = {v.get("id") for v in c_data if v.get("id")}
+                except Exception:
+                    pass
+                finally:
+                    if t_path.exists():
+                        t_path.unlink()
+
+            if catalog_path in tree_paths:
+                self.api.batch_bucket_files(bucket_id=self.tracking_bucket, delete=[catalog_path])
+        except Exception as e:
+            print(f"[COORDINATOR] Catalog deletion notice: {e}")
+
+        self.catalog_cache.pop(ch_id, None)
+
+        # 3. Clean manifest.json
+        manifest = self.load_manifest(force=True)
+        completed_dict = manifest.get("completed_videos", {}) or manifest.get("completed", {})
+        keys_to_remove = []
+        for vid, v_info in list(completed_dict.items()):
+            ch_val = v_info.get("channel") or v_info.get("channel_name") or ""
+            if ch_val == target_name or ch_val == ch_id or vid in cat_vid_ids:
+                keys_to_remove.append(vid)
+
+        for k in keys_to_remove:
+            if "completed_videos" in manifest and k in manifest["completed_videos"]:
+                del manifest["completed_videos"][k]
+            if "completed" in manifest and k in manifest["completed"]:
+                del manifest["completed"][k]
+
+        active_completed = manifest.get("completed_videos", manifest.get("completed", {}))
+        manifest["total_videos"] = len(active_completed)
+        manifest["total_hours"] = round(sum(v.get("duration", v.get("duration_seconds", 0)) for v in active_completed.values()) / 3600.0, 2)
+        if "total_segments" in manifest:
+            manifest["total_segments"] = sum(v.get("segments_count", 0) for v in active_completed.values())
+        manifest["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        self.save_manifest(manifest)
+
+        # 4. Clean segment_manifest.json if present
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.tracking_bucket))
+            if any(it.path == "segment_manifest.json" for it in tree):
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    sm_path = Path(tmp.name)
+                try:
+                    self.api.download_bucket_files(bucket_id=self.tracking_bucket, files=[("segment_manifest.json", sm_path)])
+                    with open(sm_path, "r", encoding="utf-8") as f:
+                        sm = json.load(f)
+                    sm_completed = sm.get("completed_videos", {})
+                    sm_rem = [vid for vid, v in sm_completed.items() if (v.get("channel") == target_name or v.get("channel_name") == target_name or v.get("channel") == ch_id or vid in cat_vid_ids)]
+                    for vid in sm_rem:
+                        del sm_completed[vid]
+                    sm["total_videos"] = len(sm_completed)
+                    sm["total_segments"] = sum(v.get("segments_count", 0) for v in sm_completed.values())
+                    sm["total_hours"] = round(sum(v.get("duration_seconds", 0) for v in sm_completed.values()) / 3600.0, 2)
+                    sm["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    with open(sm_path, "w", encoding="utf-8") as f:
+                        json.dump(sm, f, indent=2)
+                    self.api.batch_bucket_files(bucket_id=self.tracking_bucket, add=[(sm_path, "segment_manifest.json")])
+                finally:
+                    if sm_path.exists():
+                        sm_path.unlink()
+        except Exception:
+            pass
+
+        return {
+            "channel_id": ch_id,
+            "channel_name": target_name,
+            "channels_removed": removed_count,
+            "catalog_videos_removed": len(cat_vid_ids),
+            "manifest_videos_removed": len(keys_to_remove),
+            "remaining_total_videos": manifest["total_videos"],
+            "remaining_total_hours": manifest["total_hours"]
+        }
+
+    def delete_manifest(self) -> bool:
+        """Resets manifest.json and segment_manifest.json in tracking bucket to empty."""
+        empty_manifest = {
+            "completed": {},
+            "completed_videos": {},
+            "total_videos": 0,
+            "total_segments": 0,
+            "total_hours": 0.0,
+            "shards": [],
+            "completed_segmented_shards": [],
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.save_manifest(empty_manifest)
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.tracking_bucket))
+            if any(it.path == "segment_manifest.json" for it in tree):
+                with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                    json.dump(empty_manifest, tmp, indent=2)
+                    sm_p = Path(tmp.name)
+                try:
+                    self.api.batch_bucket_files(bucket_id=self.tracking_bucket, add=[(sm_p, "segment_manifest.json")])
+                finally:
+                    if sm_p.exists():
+                        sm_p.unlink()
+        except Exception:
+            pass
+        return True
+
     def get_channel_catalog(self, channel: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Fast catalog fetch (< 10ms):
@@ -520,11 +661,16 @@ class TranscriptionCoordinator:
         total_gb = round(disk_usage.total / (1024**3), 2)
         free_gb = round(disk_usage.free / (1024**3), 2)
 
+        active_list = active_streams or []
+        primary_vid = active_list[0] if active_list else {}
+
         hb_payload = {
             "worker_id": self.worker_id,
+            "stage": "transcribe",
             "status": status,
             "tunnel_url": tunnel_url,
-            "active_streams": active_streams or [],
+            "current_video": primary_vid,
+            "active_streams": active_list,
             "session_transcribed": session_transcribed,
             "session_hours": round(session_hours, 2),
             "speed": speed_str,
@@ -739,3 +885,92 @@ class TranscriptionCoordinator:
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+
+    # --- SEGMENTED DATASET SHARD LEASING ---
+    def lease_segmented_shard(self, segmented_repo: str = config.SEGMENTED_DATASET_REPO) -> Optional[Dict[str, Any]]:
+        """
+        Atomically leases an un-transcribed Parquet shard from the segmented dataset repo.
+        Prevents multiple Kaggle sessions from transcribing the same shard.
+        """
+        now = time.time()
+        manifest = self.load_manifest(force=True)
+        completed_shards = set(manifest.get("completed_segmented_shards", []))
+
+        active_leased_shards = set()
+        try:
+            tree = list(self.api.list_bucket_tree(bucket_id=self.tracking_bucket))
+            lease_files = [it.path for it in tree if it.path.startswith("transcribe_shard_leases/") and it.path.endswith(".json")]
+            for lf in lease_files:
+                if lf == f"transcribe_shard_leases/{self.worker_id}.json":
+                    continue
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    t_path = Path(tmp.name)
+                try:
+                    self.api.download_bucket_files(bucket_id=self.tracking_bucket, files=[(lf, t_path)])
+                    with open(t_path, "r", encoding="utf-8") as f:
+                        l_data = json.load(f)
+                    if l_data.get("expires_at", 0) > now:
+                        active_leased_shards.add(l_data.get("shard_file"))
+                except Exception:
+                    pass
+                finally:
+                    if t_path.exists():
+                        t_path.unlink()
+        except Exception:
+            pass
+
+        try:
+            candidate_shards = []
+            if hasattr(self.api, "list_repo_files"):
+                repo_files = list(self.api.list_repo_files(repo_id=segmented_repo, repo_type="dataset"))
+            elif hasattr(self.api, "storage") and segmented_repo in self.api.storage:
+                repo_files = list(self.api.storage[segmented_repo].keys())
+            elif hasattr(self.api, "list_bucket_tree"):
+                repo_files = [it.path for it in self.api.list_bucket_tree(bucket_id=segmented_repo)]
+            else:
+                repo_files = []
+
+            for f in repo_files:
+                if f.endswith(".parquet") and (f.startswith("data/") or "train" in f):
+                    if f not in completed_shards and f not in active_leased_shards:
+                        candidate_shards.append(f)
+
+            if not candidate_shards:
+                return None
+
+            selected_shard = sorted(candidate_shards)[0]
+
+            lease_info = {
+                "worker_id": self.worker_id,
+                "shard_file": selected_shard,
+                "repo_id": segmented_repo,
+                "leased_at": now,
+                "expires_at": now + (config.LEASE_TTL_MINUTES * 60)
+            }
+            with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                json.dump(lease_info, tmp, indent=2)
+                t_lease = Path(tmp.name)
+            try:
+                self.api.batch_bucket_files(
+                    bucket_id=self.tracking_bucket,
+                    add=[(t_lease, f"transcribe_shard_leases/{self.worker_id}.json")]
+                )
+            finally:
+                if t_lease.exists():
+                    t_lease.unlink()
+
+            return lease_info
+        except Exception as e:
+            print(f"[COORDINATOR] Notice leasing segmented shard: {e}")
+            return None
+
+    def release_shard_lease(self):
+        """Release this worker's shard lease."""
+        try:
+            self.api.batch_bucket_files(
+                bucket_id=self.tracking_bucket,
+                delete=[f"transcribe_shard_leases/{self.worker_id}.json"]
+            )
+        except Exception:
+            pass
+

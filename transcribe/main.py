@@ -11,6 +11,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import shutil
+import tempfile
+import pyarrow.parquet as pq
 from huggingface_hub import HfApi
 
 import transcribe.config as config
@@ -21,21 +24,29 @@ from transcribe.syncer import ParquetDatasetSyncer, BucketSyncer
 from transcribe.disk_guard import DiskGuard
 from transcribe.telegram_bot import TelegramClusterBot
 
-def print_banner(proxy_url: str, concurrency: int, bot_active: bool = False):
+def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = config.SEGMENTED_DATASET_REPO, audited_dataset: str = config.DATASET_REPO, bot_active: bool = False):
     print("\n" + "="*70)
     print("🎙️  TAMIL ASR DISTRIBUTED TRANSCRIPTION ENGINE (TWO-TIER ARCHITECTURE)")
     print("="*70)
-    print(f"📌 Worker ID:        {config.WORKER_ID}")
-    print(f"📦 Tier 1 Tracking:  {config.TRACKING_BUCKET} (< 5MB, zero audio)")
-    print(f"🎯 Tier 2 Dataset:   {config.DATASET_REPO} (Apache Parquet Shards)")
-    print(f"⚡ Concurrency:      {concurrency} parallel requests (Sweet spot: 3 to 5)")
-    print(f"🤖 Gemini Model:     {config.MODEL_NAME}")
-    print(f"🔗 Gemini Proxy:     {proxy_url}")
-    print(f"🤖 Telegram Bot:     {'ONLINE (@crawler001bot)' if bot_active else 'OFFLINE'}")
-    print(f"💾 Local Disk Quota: Strictly under {config.MAX_LOCAL_DISK_GB} GB")
+    print(f"📌 Worker ID:          {config.WORKER_ID}")
+    print(f"📦 Tier 1 Tracking:    {config.TRACKING_BUCKET} (< 5MB, zero audio)")
+    print(f"✂️  Segmented Dataset:  {segmented_dataset} (Input Shards)")
+    print(f"🎯 Audited Dataset:    {audited_dataset} (Final Corpus)")
+    print(f"⚡ Concurrency:        {concurrency} parallel requests (Sweet spot: 3 to 5)")
+    print(f"🤖 Gemini Model:       {config.MODEL_NAME}")
+    print(f"🔗 Gemini Proxy:       {proxy_url}")
+    print(f"🤖 Telegram Bot:       {'ONLINE' if bot_active else 'OFFLINE'}")
+    print(f"💾 Local Disk Quota:   Strictly under {config.MAX_LOCAL_DISK_GB} GB")
     print("="*70 + "\n")
 
-async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_size: int):
+async def run_transcription_pipeline(
+    proxy_url: str,
+    concurrency: int = config.CONCURRENCY,
+    batch_size: int = config.BATCH_LEASE_SIZE,
+    segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
+    audited_dataset: str = config.DATASET_REPO,
+    run_once: bool = False
+):
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
     if not hf_token:
@@ -46,7 +57,7 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
     api = HfApi(token=hf_token)
 
     # 2. Initialize Coordinator
-    coordinator = TranscriptionCoordinator(api=api)
+    coordinator = TranscriptionCoordinator(api=api, dataset_repo=audited_dataset)
 
     # 3. Initialize Telegram Bot and launch background monitor thread
     telegram_bot = None
@@ -67,7 +78,7 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
     syncer = ParquetDatasetSyncer(
         api=api,
         coordinator=coordinator,
-        dataset_repo=config.DATASET_REPO,
+        dataset_repo=audited_dataset,
         shard_threshold=config.SHARD_CLIP_THRESHOLD,
         telegram_bot=telegram_bot
     )
@@ -90,7 +101,13 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
         print("3. The /v1 URL is correct and includes /v1 at the end.\n", file=sys.stderr)
         sys.exit(1)
 
-    print_banner(auditor.proxy_url, concurrency, bot_active=(telegram_bot is not None))
+    print_banner(
+        proxy_url=auditor.proxy_url,
+        concurrency=concurrency,
+        segmented_dataset=segmented_dataset,
+        audited_dataset=audited_dataset,
+        bot_active=(telegram_bot is not None)
+    )
 
     running = True
     paused = False
@@ -103,6 +120,7 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
             syncer.flush_shard()
         except Exception:
             pass
+        coordinator.release_shard_lease()
         coordinator.release_lease()
         coordinator.deregister_worker()
         if telegram_bot:
@@ -141,22 +159,89 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
         # Update worker heartbeat in Tier 1 tracking bucket
         coordinator.update_heartbeat(status="leasing")
 
-        print(f"[COORDINATOR] Leasing next batch of up to {batch_size} videos (< 10ms from catalog)...")
+        # --- MODE 1: Check for un-transcribed segmented shards in the segmented dataset ---
+        shard_lease = coordinator.lease_segmented_shard(segmented_repo=segmented_dataset)
+        if shard_lease:
+            shard_file = shard_lease["shard_file"]
+            repo_id = shard_lease["repo_id"]
+            print(f"\n========================================================")
+            print(f"📦 [SEGMENTED SHARD] Transcribing leased shard: {shard_file} from {repo_id}")
+            print(f"========================================================")
+
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                local_shard_p = Path(tmp.name)
+            try:
+                # Download shard
+                if hasattr(api, "download_bucket_files"):
+                    api.download_bucket_files(bucket_id=repo_id, files=[(shard_file, local_shard_p)])
+                elif hasattr(api, "storage") and repo_id in getattr(api, "storage", {}):
+                    # In mock tests
+                    local_shard_p.write_bytes(api.storage[repo_id][shard_file])
+                else:
+                    from huggingface_hub import hf_hub_download
+                    down = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=shard_file, token=config.get_hf_token())
+                    shutil.copyfile(down, local_shard_p)
+
+                table = pq.read_table(str(local_shard_p))
+                clips_to_audit = []
+                for row_idx in range(table.num_rows):
+                    row_dict = table.slice(row_idx, 1).to_pylist()[0]
+                    audio_field = row_dict.get("audio", {})
+                    audio_bytes = audio_field.get("bytes") if isinstance(audio_field, dict) else None
+                    clips_to_audit.append({
+                        "segment_id": row_dict.get("segment_id", f"clip_{row_idx:04d}"),
+                        "video_id": row_dict.get("video_id", "unknown"),
+                        "channel_name": row_dict.get("channel_name", "Unknown"),
+                        "duration": float(row_dict.get("duration", 0.0)),
+                        "audio_bytes": audio_bytes,
+                        "audio_format": "m4a",
+                        "draft_text": ""
+                    })
+
+                print(f"[STAGE 2] Loaded {len(clips_to_audit)} clips from {shard_file}. Transcribing with concurrency {concurrency}...")
+                t0 = time.time()
+                audited = await auditor.audit_batch(clips_to_audit, desc=f"Shard {Path(shard_file).name}")
+                elapsed = time.time() - t0
+                success_count = sum(1 for s in audited if s.get("status") == "ok")
+                print(f"[STAGE 2] Audited {len(audited)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
+
+                syncer.sync_audited_segments(audited, shard_id=shard_file)
+                if syncer.buffered_rows:
+                    syncer.flush_shard()
+
+                # Mark shard completed in manifest
+                manifest = coordinator.load_manifest(force=True)
+                manifest.setdefault("completed_segmented_shards", [])
+                if shard_file not in manifest["completed_segmented_shards"]:
+                    manifest["completed_segmented_shards"].append(shard_file)
+                coordinator.save_manifest(manifest)
+                print(f"[COORDINATOR] Successfully transcribed and recorded shard {shard_file}!")
+
+            except Exception as e:
+                print(f"[COORDINATOR] Error processing shard {shard_file}: {e}")
+            finally:
+                if local_shard_p.exists():
+                    local_shard_p.unlink(missing_ok=True)
+                coordinator.release_shard_lease()
+
+            if run_once:
+                break
+            continue
+
+        # --- MODE 2: Fallback to video batch leasing from catalog ---
+        print(f"[COORDINATOR] No pending segmented shards. Leasing next batch of up to {batch_size} videos...")
         batch = coordinator.lease_next_batch(batch_size=batch_size)
 
         if not batch:
-            print("[COORDINATOR] No uncompleted or unleased videos available right now. Waiting 25s...")
+            print("[COORDINATOR] No uncompleted or unleased items available right now. Waiting 20s...")
             coordinator.update_heartbeat(status="idle")
-            await asyncio.sleep(25)
+            if run_once:
+                break
+            await asyncio.sleep(20)
             continue
 
         print(f"[COORDINATOR] Successfully leased {len(batch)} video(s): {[v['video_id'] for v in batch]}")
         coordinator.update_heartbeat(status="processing", active_streams=batch)
-
-        # --- Process Leased Batch Video-by-Video (Maintains local disk strictly under 1.0 GB) ---
-        print("\n" + "="*70)
-        print(f"📦 [BATCH PROCESSING] Processing {len(batch)} leased video(s)...")
-        print("="*70)
 
         for vid_meta in batch:
             vid_id = vid_meta["video_id"]
@@ -174,7 +259,6 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
                 continue
 
             segments = segmenter.segment_audio_by_silence(local_raw_audio, vid_id, staging_video_dir)
-            # Instantly purge raw source audio file to conserve disk space!
             local_raw_audio.unlink(missing_ok=True)
 
             if not segments:
@@ -196,34 +280,36 @@ async def run_transcription_pipeline(proxy_url: str, concurrency: int, batch_siz
             success_count = sum(1 for s in audited_segments if s.get("status") == "ok")
             print(f"[STAGE 2] Audited {len(audited_segments)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
 
-            # Stage 3: Ingest into Parquet Shard Buffer (auto-flushes when threshold reached)
             syncer.sync_video_transcripts(vid_meta, audited_segments, config.STAGING_DIR)
-
-            # Stage 4: Verify disk usage remains strictly under 1.0 GB
             disk_guard.check_and_clean(emergency_sync_cb=syncer.flush_shard)
 
-        # Flush any remaining clips in the shard buffer at the end of the batch
         if syncer.buffered_rows:
             syncer.flush_shard()
 
-        # Release current lease after batch is complete
         coordinator.release_lease()
+
+        if run_once:
+            break
 
     # Clean exit
     try:
         syncer.flush_shard()
     except Exception:
         pass
+    coordinator.release_shard_lease()
     coordinator.release_lease()
     coordinator.deregister_worker()
     if telegram_bot:
         telegram_bot.stop()
 
 def main():
-    parser = argparse.ArgumentParser(description="Distributed Tamil ASR Transcriber with Two-Tier Architecture and Telegram Monitor")
-    parser.add_argument("--proxy-url", "--url", "--proxy_url", dest="proxy_url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
+    parser = argparse.ArgumentParser(description="Distributed Tamil ASR Transcriber with Segmented Dataset Pulling")
+    parser.add_argument("--url", "--proxy-url", "--proxy_url", dest="proxy_url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
     parser.add_argument("--concurrency", type=int, default=config.CONCURRENCY, help="Parallel requests to Gemini (default: 4, recommended: 3-5)")
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
+    parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
+    parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
+    parser.add_argument("--once", action="store_true", help="Process a single leased shard or batch and exit")
 
     args = parser.parse_args()
 
@@ -245,8 +331,12 @@ def main():
     asyncio.run(run_transcription_pipeline(
         proxy_url=proxy_url,
         concurrency=args.concurrency,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        segmented_dataset=args.segmented_dataset,
+        audited_dataset=args.audited_dataset,
+        run_once=args.once
     ))
 
 if __name__ == "__main__":
     main()
+

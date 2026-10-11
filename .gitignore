@@ -15,4 +15,14 @@ tunnel_url.txt
 channel_videos.json
 .virtual_documents/
 .env
+.env*
+*.token
+*token*.txt
+token.txt
+*token*
+*.parquet
+transcribe_staging/
+segment_staging/
+shards/
+telegram_admin.json
 .ipynb_checkpoints/

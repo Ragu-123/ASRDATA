@@ -250,6 +250,12 @@ class IngestionWorker:
                 'progress_hooks': [ydl_hook]
             }
 
+            if shutil.which("aria2c"):
+                ydl_opts["external_downloader"] = {"default": "aria2c"}
+                ydl_opts["external_downloader_args"] = {
+                    "aria2c": ["-s", "8", "-x", "8", "-k", "1M", "-j", "8"]
+                }
+
             with self._lock:
                 self.active_videos[vid_id] = {
                     "id": vid_id,
