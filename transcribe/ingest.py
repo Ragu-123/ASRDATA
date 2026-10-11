@@ -6,6 +6,8 @@ Provides 5x-10x accelerated YouTube audio extraction for Kaggle and distributed 
 
 import os
 import sys
+import time
+import random
 import shutil
 import subprocess
 from pathlib import Path
@@ -59,18 +61,21 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         'socket_timeout': 30,
         'retries': 5,
         'fragment_retries': 5,
-        'extractor_args': {
+        'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
             'youtube': {
-                'player_client': ['android', 'ios'],
-                'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
+                'player_client': ['android', 'ios', 'tv', 'mweb'],
+                'player_skip': ['web', 'web_embedded', 'android_vr']
             }
-        },
+        }),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'm4a',
             'preferredquality': '128',
         }],
     }
+
+    if getattr(config, "COOKIE_FILE", None):
+        opts["cookiefile"] = config.COOKIE_FILE
 
     if shutil.which("aria2c"):
         opts["external_downloader"] = {"default": "aria2c"}
@@ -80,7 +85,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
 
     return opts
 
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios;player_skip=web,tv,web_embedded,android_vr"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,tv,mweb;player_skip=web,web_embedded,android_vr"'
 
 def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None, telegram_bot: Optional[Any] = None) -> Optional[Path]:
     """
@@ -89,6 +94,9 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
     dest_dir.mkdir(parents=True, exist_ok=True)
     out_template = str(dest_dir / f"{video_id}.%(ext)s")
     opts = get_ytdlp_audio_opts(out_template)
+
+    # Anti-burst jitter to prevent concurrent bot detection across threads
+    time.sleep(random.uniform(0.3, 1.0))
 
     def _extract_with_fallback(current_opts):
         try:
@@ -112,14 +120,15 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                 print(f"[INGEST] ⚠️ Retrying {video_id} with authenticated YouTube cookies...")
                 cookie_opts = dict(current_opts)
                 cookie_opts["cookiefile"] = config.COOKIE_FILE
-                cookie_opts.pop("extractor_args", None)
+                cookie_opts.pop("external_downloader", None)
+                cookie_opts.pop("external_downloader_args", None)
                 try:
                     with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
                         return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
                 except Exception:
                     pass
 
-            raise dl_err
+            raise native_err if 'native_err' in locals() else dl_err
 
     try:
         _extract_with_fallback(opts)

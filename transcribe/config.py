@@ -57,14 +57,14 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
-# yt-dlp Bot Detection Bypass Extractor Args
+# Robust player clients: Android, iOS, TV, and Mobile Web (skipping desktop web to prevent datacenter bot checks)
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios"],
-        "player_skip": ["web", "tv", "web_embedded", "android_vr"]
+        "player_client": ["android", "ios", "tv", "mweb"],
+        "player_skip": ["web", "web_embedded", "android_vr"]
     }
 }
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios;player_skip=web,tv,web_embedded,android_vr"'
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,tv,mweb;player_skip=web,web_embedded,android_vr"'
 
 # Default Seed Channels for Upfront Scraping
 DEFAULT_CHANNELS = [

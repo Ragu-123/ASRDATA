@@ -1,6 +1,7 @@
 import re
 import time
 import shutil
+import random
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -288,6 +289,9 @@ class IngestionWorker:
                 'progress_hooks': [ydl_hook]
             }
 
+            if getattr(config, "COOKIE_FILE", None):
+                ydl_opts["cookiefile"] = config.COOKIE_FILE
+
             if shutil.which("aria2c"):
                 ydl_opts["external_downloader"] = {"default": "aria2c"}
                 ydl_opts["external_downloader_args"] = {
@@ -304,6 +308,9 @@ class IngestionWorker:
                     "speed": "0 MB/s",
                     "eta": "starting..."
                 }
+
+            # Anti-burst jitter to prevent concurrent bot detection across threads
+            time.sleep(random.uniform(0.3, 1.0))
 
             def _extract_with_fallback(current_opts):
                 try:
@@ -329,16 +336,15 @@ class IngestionWorker:
                         print(f"[WORKER] ⚠️ Retrying {vid_id} with authenticated YouTube cookies...")
                         cookie_opts = dict(current_opts)
                         cookie_opts["cookiefile"] = config.COOKIE_FILE
-                        cookie_opts.pop("extractor_args", None)
                         cookie_opts.pop("external_downloader", None)
                         cookie_opts.pop("external_downloader_args", None)
                         try:
                             with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
                                 return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
-                        except Exception:
+                        except Exception as cookie_err:
                             pass
 
-                    raise dl_err
+                    raise native_err if 'native_err' in locals() else dl_err
 
             try:
                 info = _extract_with_fallback(ydl_opts)

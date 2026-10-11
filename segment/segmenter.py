@@ -1,6 +1,8 @@
 import os
 import sys
 import re
+import time
+import random
 import shutil
 import subprocess
 from pathlib import Path
@@ -95,8 +97,8 @@ class AudioSegmenter:
             'retries': 4,
             'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
                 'youtube': {
-                    'player_client': ['android'],
-                    'player_skip': ['web', 'tv', 'web_embedded', 'ios', 'mweb', 'android_vr']
+                    'player_client': ['android', 'ios', 'tv', 'mweb'],
+                    'player_skip': ['web', 'web_embedded', 'android_vr']
                 }
             }),
             'postprocessors': [{
@@ -105,11 +107,18 @@ class AudioSegmenter:
                 'preferredquality': '128',
             }],
         }
+        if getattr(config, "COOKIE_FILE", None):
+            ydl_opts["cookiefile"] = config.COOKIE_FILE
+
         if shutil.which("aria2c"):
             ydl_opts["external_downloader"] = {"default": "aria2c"}
             ydl_opts["external_downloader_args"] = {
                 "aria2c": ["-s", "8", "-x", "8", "-k", "1M", "-j", "8"]
             }
+
+        # Anti-burst jitter to prevent concurrent bot detection across threads
+        time.sleep(random.uniform(0.3, 1.0))
+
         def _extract_with_fallback(current_opts):
             try:
                 with yt_dlp.YoutubeDL(current_opts) as ydl:
@@ -132,14 +141,15 @@ class AudioSegmenter:
                     print(f"[SEGMENTER] ⚠️ Retrying {video_id} with authenticated YouTube cookies...")
                     cookie_opts = dict(current_opts)
                     cookie_opts["cookiefile"] = config.COOKIE_FILE
-                    cookie_opts.pop("extractor_args", None)
+                    cookie_opts.pop("external_downloader", None)
+                    cookie_opts.pop("external_downloader_args", None)
                     try:
                         with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
                             return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
                     except Exception:
                         pass
 
-                raise dl_err
+                raise native_err if 'native_err' in locals() else dl_err
 
         try:
             _extract_with_fallback(ydl_opts)
