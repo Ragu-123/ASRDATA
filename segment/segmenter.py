@@ -38,7 +38,23 @@ class AudioSegmenter:
         fname = filename or f"{video_id}.m4a"
         dest_path = dest_dir / fname
 
-        # 1. Try downloading from source bucket
+        # 1. Try downloading from Stage 1 Raw Dataset repo if configured
+        if getattr(config, "RAW_DATASET_REPO", None):
+            try:
+                from huggingface_hub import hf_hub_download
+                dl_path = hf_hub_download(
+                    repo_id=config.RAW_DATASET_REPO,
+                    filename=f"audios/{fname}",
+                    repo_type="dataset",
+                    local_dir=str(dest_dir)
+                )
+                p = Path(dl_path)
+                if p.exists() and p.stat().st_size > 10000:
+                    return p
+            except Exception:
+                pass
+
+        # 2. Try downloading from source bucket
         if config.SOURCE_BUCKET:
             try:
                 remote_path = f"audios/{fname}"

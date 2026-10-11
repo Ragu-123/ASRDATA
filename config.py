@@ -5,9 +5,18 @@ import time
 from pathlib import Path
 
 # --- Storage & Target Settings (Two-Tier Architecture) ---
+# Tier 1: Tracking Bucket strictly for JSON metadata (manifest, leases, catalogs < 5 MB, ZERO audios)
 TRACKING_BUCKET = os.getenv("TRACKING_BUCKET", "King758/asr-tracking-01")
+BUCKET_ID = TRACKING_BUCKET
+
+# Dedicated Separate Storage for Stage 1 Raw Audios (Completely separated from tracking bucket)
+RAW_DATASET_REPO = os.getenv("RAW_DATASET_REPO", "King758/tamil-raw-audio")
+RAW_BUCKET = os.getenv("RAW_BUCKET", "King758/media-archive-01")
+RAW_STORAGE_TYPE = os.getenv("RAW_STORAGE_TYPE", "dataset")  # 'dataset' or 'bucket'
+
+# Tier 2: Hugging Face Datasets
+SEGMENTED_DATASET_REPO = os.getenv("SEGMENTED_DATASET_REPO", "King758/tamil-asr-segmented")
 DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
-BUCKET_ID = os.getenv("BUCKET_ID", TRACKING_BUCKET)
 
 # Determine runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")

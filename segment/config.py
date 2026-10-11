@@ -35,9 +35,13 @@ SHARDS_DIR = WORKING_DIR / "shards"
 SHARDS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Storage & Target Repositories
+# Tier 1: Tracking Bucket strictly for JSON metadata (catalogs, leases, manifest < 5 MB, ZERO audio)
 TRACKING_BUCKET = os.getenv("TRACKING_BUCKET", "King758/asr-tracking-01")
-SOURCE_BUCKET = os.getenv("SOURCE_BUCKET", "King758/media-archive-01")
-RAW_BUCKET = os.getenv("RAW_BUCKET", TRACKING_BUCKET)
+
+# Dedicated Separate Raw Audio Storage (from Stage 1)
+RAW_DATASET_REPO = os.getenv("RAW_DATASET_REPO", "King758/tamil-raw-audio")
+RAW_BUCKET = os.getenv("RAW_BUCKET", "King758/media-archive-01")
+SOURCE_BUCKET = os.getenv("SOURCE_BUCKET", RAW_BUCKET)
 
 # Target Segmented Dataset (stores Parquet shards with 10s audio clips & metadata)
 SEGMENTED_DATASET_REPO = os.getenv("SEGMENTED_DATASET_REPO", "King758/tamil-asr-segmented")

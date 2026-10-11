@@ -9,18 +9,20 @@ from coordinator import ClusterCoordinator
 
 class BucketSync:
     """
-    High-throughput batch uploader to Hugging Face Storage Bucket.
-    Manages local staging cleanup and disk quota recovery.
+    Batch uploader for Stage 1 Raw Audio.
+    Uploads raw audio files to dedicated Raw Audio Storage (Dataset or separate bucket),
+    completely separate from the tracking bucket.
     """
     def __init__(self, api: HfApi, coordinator: ClusterCoordinator):
         self.api = api
         self.coordinator = coordinator
-        self.bucket_id = config.BUCKET_ID
+        self.raw_storage = config.RAW_DATASET_REPO if getattr(config, "RAW_STORAGE_TYPE", "dataset") == "dataset" else config.RAW_BUCKET
+        self.storage_type = getattr(config, "RAW_STORAGE_TYPE", "dataset")
 
     def flush_staging(self, manifest_updates: Dict[str, Any]) -> int:
         """
-        Upload all audio files currently in staging to the bucket,
-        merge updates into the global manifest, and purge local files.
+        Upload all audio files currently in staging to dedicated raw storage,
+        merge updates into the global manifest in tracking bucket, and purge local files.
         Strictly strips video files or drops non-audio containers.
         """
         raw_files = list(config.STAGING_DIR.glob("*.*"))
@@ -47,14 +49,25 @@ class BucketSync:
             return 0
 
         print(f"\n========================================================")
-        print(f"[BUCKET_SYNC] Syncing {len(audio_files)} audio files to '{self.bucket_id}'...")
-        upload_pairs = [(f, f"audios/{f.name}") for f in audio_files]
+        print(f"[STAGE 1 INGEST] Syncing {len(audio_files)} audio files to separate {self.storage_type} '{self.raw_storage}'...")
 
         try:
             t0 = time.time()
-            self.api.batch_bucket_files(bucket_id=self.bucket_id, add=upload_pairs)
+            if self.storage_type == "dataset":
+                self.api.create_repo(repo_id=self.raw_storage, repo_type="dataset", exist_ok=True)
+                for f in audio_files:
+                    self.api.upload_file(
+                        path_or_fileobj=str(f),
+                        path_in_repo=f"audios/{f.name}",
+                        repo_id=self.raw_storage,
+                        repo_type="dataset"
+                    )
+            else:
+                self.api.create_bucket(bucket_id=self.raw_storage, private=False, exist_ok=True)
+                upload_pairs = [(f, f"audios/{f.name}") for f in audio_files]
+                self.api.batch_bucket_files(bucket_id=self.raw_storage, add=upload_pairs)
             elapsed = time.time() - t0
-            print(f"[BUCKET_SYNC] Uploaded {len(audio_files)} files in {elapsed:.1f}s!")
+            print(f"[STAGE 1 INGEST] Uploaded {len(audio_files)} files in {elapsed:.1f}s!")
 
             # Load latest manifest to prevent overwriting peer nodes
             current_manifest = self.coordinator.load_manifest()

@@ -51,18 +51,29 @@ class ParquetSegmentSyncer:
         self.shards_dir = config.SHARDS_DIR
         self.shards_dir.mkdir(parents=True, exist_ok=True)
 
-        # PyArrow Audio Struct schema
+        # PyArrow Audio Struct schema compatible with Hugging Face datasets Audio feature
         self.audio_type = pa.struct([
             ("bytes", pa.binary()),
             ("path", pa.string())
         ])
+        hf_meta = {
+            "info": {
+                "features": {
+                    "audio": {"_type": "Audio"},
+                    "duration": {"dtype": "float64", "_type": "Value"},
+                    "channel_name": {"dtype": "string", "_type": "Value"},
+                    "video_id": {"dtype": "string", "_type": "Value"},
+                    "segment_id": {"dtype": "string", "_type": "Value"}
+                }
+            }
+        }
         self.schema = pa.schema([
             ("audio", self.audio_type),
             ("duration", pa.float64()),
             ("channel_name", pa.string()),
             ("video_id", pa.string()),
             ("segment_id", pa.string())
-        ])
+        ], metadata={b"huggingface": json.dumps(hf_meta).encode("utf-8")})
 
         self._init_shard_index()
 

@@ -54,11 +54,23 @@ class ParquetDatasetSyncer:
         self.shards_dir = config.SHARDS_DIR
         self.shards_dir.mkdir(parents=True, exist_ok=True)
 
-        # PyArrow Audio Struct schema compatible with Hugging Face datasets streaming
+        # PyArrow Audio Struct schema compatible with Hugging Face datasets streaming Audio feature
         self.audio_type = pa.struct([
             ("bytes", pa.binary()),
             ("path", pa.string())
         ])
+        hf_meta = {
+            "info": {
+                "features": {
+                    "audio": {"_type": "Audio"},
+                    "sentence": {"dtype": "string", "_type": "Value"},
+                    "duration": {"dtype": "float64", "_type": "Value"},
+                    "video_id": {"dtype": "string", "_type": "Value"},
+                    "segment_id": {"dtype": "string", "_type": "Value"},
+                    "emotion": {"dtype": "string", "_type": "Value"}
+                }
+            }
+        }
         self.schema = pa.schema([
             ("audio", self.audio_type),
             ("sentence", pa.string()),
@@ -66,7 +78,7 @@ class ParquetDatasetSyncer:
             ("video_id", pa.string()),
             ("segment_id", pa.string()),
             ("emotion", pa.string())
-        ])
+        ], metadata={b"huggingface": json.dumps(hf_meta).encode("utf-8")})
 
         # Discover initial shard_index from manifest if any
         self._init_shard_index()

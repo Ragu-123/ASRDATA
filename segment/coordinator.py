@@ -55,7 +55,7 @@ class SegmentCoordinator:
         self._ensure_storage_ready()
 
     def _ensure_storage_ready(self):
-        """Ensure tracking bucket and segmented dataset repository exist."""
+        """Ensure tracking bucket and segmented dataset repository exist with Audio dataset card."""
         try:
             self.api.create_bucket(bucket_id=self.tracking_bucket, private=False, exist_ok=True)
         except Exception as e:
@@ -63,6 +63,40 @@ class SegmentCoordinator:
 
         try:
             self.api.create_repo(repo_id=self.dataset_repo, repo_type="dataset", exist_ok=True)
+            card = (
+                "---\n"
+                "configs:\n"
+                "- config_name: default\n"
+                "  data_files:\n"
+                "  - split: train\n"
+                "    path: data/*.parquet\n"
+                "dataset_info:\n"
+                "  features:\n"
+                "  - name: audio\n"
+                "    dtype: audio\n"
+                "  - name: duration\n"
+                "    dtype: float64\n"
+                "  - name: channel_name\n"
+                "    dtype: string\n"
+                "  - name: video_id\n"
+                "    dtype: string\n"
+                "  - name: segment_id\n"
+                "    dtype: string\n"
+                "  splits:\n"
+                "  - name: train\n"
+                "---\n\n"
+                "# Tamil ASR Segmented Dataset\n"
+                "High-quality segmented Tamil speech clips with embedded audio for ASR training.\n"
+            )
+            try:
+                self.api.upload_file(
+                    path_or_fileobj=card.encode("utf-8"),
+                    path_in_repo="README.md",
+                    repo_id=self.dataset_repo,
+                    repo_type="dataset"
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"[SEGMENT COORDINATOR] Segmented dataset repo check notice: {e}")
 
