@@ -280,7 +280,7 @@ class IngestionWorker:
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
                 },
-                'extractor_args': config.YTDLP_EXTRACTOR_ARGS,
+                'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else config.YTDLP_EXTRACTOR_ARGS,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
@@ -336,6 +336,11 @@ class IngestionWorker:
                         print(f"[WORKER] ⚠️ Retrying {vid_id} with authenticated YouTube cookies...")
                         cookie_opts = dict(current_opts)
                         cookie_opts["cookiefile"] = config.COOKIE_FILE
+                        cookie_opts["extractor_args"] = {
+                            "youtube": {
+                                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+                            }
+                        }
                         cookie_opts.pop("external_downloader", None)
                         cookie_opts.pop("external_downloader_args", None)
                         try:

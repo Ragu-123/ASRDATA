@@ -61,9 +61,9 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
         'socket_timeout': 30,
         'retries': 5,
         'fragment_retries': 5,
-        'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
+        'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {
             'youtube': {
-                'player_client': ['android', 'ios', 'tv', 'mweb'],
+                'player_client': ['android', 'ios', 'tv'],
                 'player_skip': ['web', 'web_embedded', 'android_vr']
             }
         }),
@@ -120,6 +120,11 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                 print(f"[INGEST] ⚠️ Retrying {video_id} with authenticated YouTube cookies...")
                 cookie_opts = dict(current_opts)
                 cookie_opts["cookiefile"] = config.COOKIE_FILE
+                cookie_opts["extractor_args"] = {
+                    "youtube": {
+                        "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+                    }
+                }
                 cookie_opts.pop("external_downloader", None)
                 cookie_opts.pop("external_downloader_args", None)
                 try:

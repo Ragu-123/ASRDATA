@@ -57,14 +57,33 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
-# Robust player clients: Android, iOS, TV, and Mobile Web (skipping desktop web to prevent datacenter bot checks)
-YTDLP_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["android", "ios", "tv", "mweb"],
-        "player_skip": ["web", "web_embedded", "android_vr"]
+def get_ytdlp_extractor_args() -> dict:
+    """Return optimal yt-dlp extractor args based on whether cookies are active.
+    - With authenticated cookies: prioritize clients that support Netscape cookies
+      ('tv', 'mweb', 'web_safari', 'default') so YouTube receives the authenticated session.
+    - Without cookies: use mobile/tv clients ('android', 'ios', 'tv') and skip desktop web
+      to bypass datacenter IP bot detection challenges.
+    """
+    if os.getenv("COOKIE_FILE"):
+        return {
+            "youtube": {
+                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+            }
+        }
+    return {
+        "youtube": {
+            "player_client": ["android", "ios", "tv"],
+            "player_skip": ["web", "web_embedded", "android_vr"]
+        }
     }
-}
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,tv,mweb;player_skip=web,web_embedded,android_vr"'
+
+# yt-dlp Bot Detection Bypass Extractor Args
+YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
+YTDLP_EXTRACTOR_ARGS_CLI = (
+    '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
+    if os.getenv("COOKIE_FILE") else
+    '--extractor-args "youtube:player_client=android,ios,tv;player_skip=web,web_embedded,android_vr"'
+)
 
 # Default Seed Channels for Upfront Scraping
 DEFAULT_CHANNELS = [

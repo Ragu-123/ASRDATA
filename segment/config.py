@@ -87,8 +87,28 @@ def validate_youtube_cookies(path_or_str: str) -> bool:
     except Exception:
         return True
 
+def get_ytdlp_extractor_args() -> dict:
+    """Return optimal yt-dlp extractor args based on whether cookies are active.
+    - With authenticated cookies: prioritize clients that support Netscape cookies
+      ('tv', 'mweb', 'web_safari', 'default') so YouTube receives the authenticated session.
+    - Without cookies: use mobile/tv clients ('android', 'ios', 'tv') and skip desktop web
+      to bypass datacenter IP bot detection challenges.
+    """
+    if COOKIE_FILE or os.getenv("COOKIE_FILE"):
+        return {
+            "youtube": {
+                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+            }
+        }
+    return {
+        "youtube": {
+            "player_client": ["android", "ios", "tv"],
+            "player_skip": ["web", "web_embedded", "android_vr"]
+        }
+    }
+
 def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
-    global COOKIE_FILE
+    global COOKIE_FILE, YTDLP_EXTRACTOR_ARGS, YTDLP_EXTRACTOR_ARGS_CLI
     if not path_str:
         return COOKIE_FILE
     p = Path(str(path_str).strip().strip("'\""))
@@ -105,6 +125,8 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
 
         COOKIE_FILE = str(p.resolve())
         os.environ["COOKIE_FILE"] = COOKIE_FILE
+        YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
+        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
         print(f"[CONFIG] 🍪 YouTube Cookies: ACTIVE ({COOKIE_FILE})")
         return COOKIE_FILE
     return None
@@ -140,14 +162,13 @@ if not COOKIE_FILE:
         except Exception:
             pass
 
-# Robust player clients: Android, iOS, TV, and Mobile Web (skipping desktop web to prevent datacenter bot checks)
-YTDLP_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["android", "ios", "tv", "mweb"],
-        "player_skip": ["web", "web_embedded", "android_vr"]
-    }
-}
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,tv,mweb;player_skip=web,web_embedded,android_vr"'
+# yt-dlp Bot Detection Bypass Extractor Args
+YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
+YTDLP_EXTRACTOR_ARGS_CLI = (
+    '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
+    if COOKIE_FILE else
+    '--extractor-args "youtube:player_client=android,ios,tv;player_skip=web,web_embedded,android_vr"'
+)
 
 # Default Seed Channels if catalog is empty
 DEFAULT_CHANNELS = [

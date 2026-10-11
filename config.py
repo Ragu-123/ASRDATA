@@ -73,6 +73,26 @@ def validate_youtube_cookies(path_or_str: str) -> bool:
     except Exception:
         return True
 
+def get_ytdlp_extractor_args() -> dict:
+    """Return optimal yt-dlp extractor args based on whether cookies are active.
+    - With authenticated cookies: prioritize clients that support Netscape cookies
+      ('tv', 'mweb', 'web_safari', 'default') so YouTube receives the authenticated session.
+    - Without cookies: use mobile/tv clients ('android', 'ios', 'tv') and skip desktop web
+      to bypass datacenter IP bot detection challenges.
+    """
+    if COOKIE_FILE or os.getenv("COOKIE_FILE"):
+        return {
+            "youtube": {
+                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+            }
+        }
+    return {
+        "youtube": {
+            "player_client": ["android", "ios", "tv"],
+            "player_skip": ["web", "web_embedded", "android_vr"]
+        }
+    }
+
 def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
     """Set global COOKIE_FILE and environment variable if file exists.
     If the file is in a read-only filesystem (e.g. /kaggle/input), automatically
@@ -80,7 +100,7 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
     cookiejar does not crash with OSError: [Errno 30] Read-only file system.
     Never discards user-provided cookies.
     """
-    global COOKIE_FILE
+    global COOKIE_FILE, YTDLP_EXTRACTOR_ARGS, YTDLP_EXTRACTOR_ARGS_CLI
     if not path_str:
         return COOKIE_FILE
     p = Path(str(path_str).strip().strip("'\""))
@@ -98,6 +118,8 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
 
         COOKIE_FILE = str(p.resolve())
         os.environ["COOKIE_FILE"] = COOKIE_FILE
+        YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
+        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
         print(f"[CONFIG] 🍪 YouTube Cookies: ACTIVE ({COOKIE_FILE})")
         return COOKIE_FILE
     return None
@@ -142,14 +164,12 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 
 # yt-dlp Bot Detection Bypass Extractor Args
-# Robust player clients: Android, iOS, TV, and Mobile Web (skipping desktop web to prevent datacenter bot checks)
-YTDLP_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["android", "ios", "tv", "mweb"],
-        "player_skip": ["web", "web_embedded", "android_vr"]
-    }
-}
-YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=android,ios,tv,mweb;player_skip=web,web_embedded,android_vr"'
+YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
+YTDLP_EXTRACTOR_ARGS_CLI = (
+    '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
+    if COOKIE_FILE else
+    '--extractor-args "youtube:player_client=android,ios,tv;player_skip=web,web_embedded,android_vr"'
+)
 
 # Quota & Batch Controls
 DISK_PER_NODE_GB = 19.5
