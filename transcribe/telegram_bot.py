@@ -87,16 +87,8 @@ class TelegramClusterBot:
         return None
 
     def get_reply_keyboard(self) -> Dict[str, Any]:
-        """Persistent interactive menu bar for Telegram UI."""
-        return {
-            "keyboard": [
-                [{"text": "📊 /status"}, {"text": "➕ /add_channel"}],
-                [{"text": "💾 /flush"}, {"text": "⚠️ /errors"}],
-                [{"text": "▶️ /resume"}, {"text": "⏸️ /pause"}, {"text": "❓ /help"}]
-            ],
-            "resize_keyboard": True,
-            "is_persistent": True
-        }
+        """Dismiss custom keyboard so Telegram displays native left-side Menu button."""
+        return {"remove_keyboard": True}
 
     def normalize_command(self, text: str) -> str:
         """Map button text or plain text to slash command."""
@@ -132,14 +124,14 @@ class TelegramClusterBot:
         if not self.token or not self.base_url:
             return False
         commands = [
-            {"command": "status", "description": "📊 Live cluster overview & progress"},
-            {"command": "help", "description": "❓ Available commands guide"},
-            {"command": "errors", "description": "⚠️ View recent cluster errors"},
+            {"command": "status", "description": "📊 Live throughput, progress & worker tabs"},
             {"command": "add_channel", "description": "➕ Upfront scrape & queue YouTube channel"},
-            {"command": "flush", "description": "💾 Force immediate Parquet shard sync"},
             {"command": "pause", "description": "⏸️ Pause cluster operations"},
             {"command": "resume", "description": "▶️ Resume cluster operations"},
+            {"command": "flush", "description": "💾 Force immediate Parquet shard sync"},
+            {"command": "errors", "description": "⚠️ View recent cluster errors"},
             {"command": "stop", "description": "🛑 Graceful cluster shutdown"},
+            {"command": "help", "description": "❓ Available commands guide"},
             {"command": "delete_channel", "description": "🗑️ Delete channel catalog & records"},
             {"command": "delete_manifest", "description": "🗑️ Reset completed tracking manifest"},
             {"command": "admin", "description": "👑 Show admin lock status"}
