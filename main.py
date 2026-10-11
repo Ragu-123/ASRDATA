@@ -29,15 +29,15 @@ from coordinator import ClusterCoordinator
 from bucket_sync import BucketSync
 from worker import IngestionWorker
 
-def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE):
+def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE, buffer_gb: float = config.BUFFER_GB):
     print("\n" + "="*70)
     print("📥  TAMIL ASR STAGE 1: RAW AUDIO INGESTION ENGINE (main.py)")
     print("="*70)
     print(f"📌 Node ID:         {config.NODE_ID}")
     print(f"📦 Target Bucket:   {config.BUCKET_ID}")
-    print(f"💾 Working Dir:     {config.WORKING_DIR}")
-    print(f"⚠️  Disk Threshold:  {config.DISK_THRESHOLD_GB} GB (Auto-flush trigger)")
+    print(f"💾 Staging Dir:     {config.STAGING_DIR}")
     print(f"⚡ Batch Lease:     {batch_size} videos per lease")
+    print(f"📦 Buffer Flush:    {buffer_gb:.1f} GB threshold (Single commit upload)")
     print(f"🔥 Concurrency:     {concurrency} parallel streams (aria2c 8x sockets each)")
     if getattr(config, "COOKIE_FILE", None):
         print(f"🍪 YouTube Cookies: ACTIVE ({config.COOKIE_FILE})")
@@ -85,6 +85,13 @@ def main():
         "--once",
         action="store_true",
         help="Process a single batch and exit"
+    )
+    parser.add_argument(
+        "--buffer-gb", "--buffer_gb",
+        dest="buffer_gb",
+        type=float,
+        default=config.BUFFER_GB,
+        help=f"Buffer size in GB before uploading raw audios in single commit (default: {config.BUFFER_GB} GB)"
     )
     # Backward compatibility flags (no-op)
     parser.add_argument("--stage", "-s", type=str, default="ingest", help=argparse.SUPPRESS)
@@ -192,7 +199,8 @@ def main():
         coordinator=coordinator,
         bucket_sync=bucket_sync,
         telegram_bot=telegram_bot,
-        concurrency=args.concurrency
+        concurrency=args.concurrency,
+        buffer_gb=args.buffer_gb
     )
     if telegram_bot:
         worker.startup_notified = True
@@ -216,7 +224,7 @@ def main():
 
     # 7. Start Ingestion Worker
     worker.start()
-    print_banner(channel=channel_input, batch_size=args.batch_size, concurrency=args.concurrency)
+    print_banner(channel=channel_input, batch_size=args.batch_size, concurrency=args.concurrency, buffer_gb=args.buffer_gb)
 
     print(f"[BOOT] Running Stage 1 ingestion worker. Downloading audio for channel(s)...")
     try:

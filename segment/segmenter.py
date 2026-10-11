@@ -23,6 +23,23 @@ class AudioSegmenter:
     3. Crops clips into ~10s range (constrained between 4-15s).
     4. Extracts metadata (duration, audio, channel_name, video_id, segment_id).
     """
+    @staticmethod
+    def resolve_channel_name(video_id: str, default: str = "Unknown") -> str:
+        """Resolve author/channel name using lightweight YouTube oEmbed API without auth."""
+        if not video_id or video_id == "unknown":
+            return default
+        try:
+            import httpx
+            with httpx.Client(timeout=4.0) as client:
+                resp = client.get(f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json")
+                if resp.status_code == 200:
+                    author = resp.json().get("author_name")
+                    if author:
+                        return author
+        except Exception:
+            pass
+        return default
+
     def __init__(self, api: HfApi, telegram_bot: Optional[Any] = None):
         self.api = api
         self.telegram_bot = telegram_bot

@@ -26,12 +26,14 @@ class IngestionWorker:
     - Centralized coordinator leasing (sub-second, shared bucket catalog).
     - Accurate per-node session progress tracking.
     """
-    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = "", telegram_bot: Optional[Any] = None, concurrency: Optional[int] = None):
+    def __init__(self, coordinator: ClusterCoordinator, bucket_sync: BucketSync, tunnel_url: str = "", telegram_bot: Optional[Any] = None, concurrency: Optional[int] = None, buffer_gb: Optional[float] = None):
         self.coordinator = coordinator
         self.bucket_sync = bucket_sync
         self.tunnel_url = tunnel_url
         self.telegram_bot = telegram_bot
         self.concurrency = concurrency or config.CONCURRENT_DOWNLOADS_PER_NODE
+        self.buffer_gb = buffer_gb if buffer_gb is not None else getattr(config, "BUFFER_GB", 1.0)
+        self.buffer_bytes = int(self.buffer_gb * (1024**3))
 
         self.running = False
         self.paused = False
@@ -50,6 +52,16 @@ class IngestionWorker:
 
         # Local completed buffer awaiting flush
         self.pending_manifest_updates: Dict[str, Any] = {}
+
+    def get_staging_bytes(self) -> int:
+        """Calculate total bytes of downloaded audio currently in staging directory."""
+        try:
+            return sum(
+                f.stat().st_size for f in config.STAGING_DIR.glob("*.*")
+                if f.is_file() and f.suffix.lower() in [".m4a", ".opus", ".mp3", ".wav", ".aac", ".ogg", ".webm", ".mp4"]
+            )
+        except Exception:
+            return 0
 
     def register_callback(self, cb: Callable[[Dict[str, Any]], None]):
         self.telemetry_callbacks.append(cb)
@@ -399,11 +411,18 @@ class IngestionWorker:
                     time.sleep(12)
                 if self.telegram_bot:
                     try:
-                        self.telegram_bot.send_warning_alert(
-                            worker_id=config.NODE_ID,
-                            video_id=vid_id,
-                            warning_msg=f"Download failed: {err_str}"
-                        )
+                        if hasattr(self.telegram_bot, "send_error_alert"):
+                            self.telegram_bot.send_error_alert(
+                                worker_id=config.NODE_ID,
+                                video_id=vid_id,
+                                error_msg=f"Download failed: {err_str}"
+                            )
+                        if hasattr(self.telegram_bot, "send_warning_alert"):
+                            self.telegram_bot.send_warning_alert(
+                                worker_id=config.NODE_ID,
+                                video_id=vid_id,
+                                warning_msg=f"Download failed: {err_str}"
+                            )
                     except Exception:
                         pass
                 return None
@@ -442,14 +461,25 @@ class IngestionWorker:
 
                     print(f"[{completed_in_batch}/{total_in_batch}] ✓ [{vid_id}] {res['title'][:38]}... | {res['size_mb']:.1f}MB | {res['duration_seconds']/60:.1f}m | in {res['elapsed']:.1f}s")
 
-                # Check Disk Threshold after each completed video
-                used_gb = shutil.disk_usage(config.WORKING_DIR).used / (1024**3)
-                if used_gb >= config.DISK_THRESHOLD_GB:
-                    print(f"[WORKER] Disk reached threshold ({used_gb:.2f} GB). Triggering automatic bucket flush...")
+                # Check Staging Buffer GB: If reached target buffer (e.g. >= 1.0 GB), flush immediately in single commit!
+                st_bytes = self.get_staging_bytes()
+                if st_bytes >= self.buffer_bytes:
+                    print(f"[WORKER] Staging buffer reached {st_bytes / (1024**3):.2f} GB (Threshold: {self.buffer_gb:.1f} GB). Flushing in single commit...")
                     self.trigger_flush()
+                else:
+                    # Check Disk Threshold after each completed video
+                    used_gb = shutil.disk_usage(config.WORKING_DIR).used / (1024**3)
+                    if used_gb >= config.DISK_THRESHOLD_GB:
+                        print(f"[WORKER] Disk reached threshold ({used_gb:.2f} GB). Triggering automatic bucket flush...")
+                        self.trigger_flush()
 
-        # Batch finished: flush all completed audios to bucket and release lease
-        self.trigger_flush()
+        # Batch finished: if buffer reached threshold, flush in single commit
+        st_bytes = self.get_staging_bytes()
+        if st_bytes >= self.buffer_bytes:
+            print(f"[WORKER] Staging buffer reached {st_bytes / (1024**3):.2f} GB. Flushing to dataset in single commit...")
+            self.trigger_flush()
+        else:
+            print(f"[WORKER] Staging buffer holding {st_bytes / (1024**2):.1f} MB / {self.buffer_gb * 1024:.0f} MB target. Batch complete; continuing to next batch...")
         self.coordinator.release_batch()
         self.batch_info = "Batch Completed"
         self.download_speed = "0 MB/s"
@@ -463,6 +493,7 @@ def main():
     parser = argparse.ArgumentParser(description="Tamil ASR Audio Harvest Ingestion Worker")
     parser.add_argument("--batch-size", type=int, default=config.BATCH_LEASE_SIZE, help="Videos per lease")
     parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    parser.add_argument("--buffer-gb", "--buffer_gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Buffer size in GB before flush (default: {config.BUFFER_GB} GB)")
     args = parser.parse_args()
 
     hf_token = config.get_hf_token()
@@ -490,7 +521,12 @@ def main():
     else:
         print("[WORKER] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
-    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, telegram_bot=telegram_bot)
+    worker = IngestionWorker(
+        coordinator=coordinator,
+        bucket_sync=bucket_sync,
+        telegram_bot=telegram_bot,
+        buffer_gb=args.buffer_gb
+    )
 
     def shutdown_handler(signum, frame):
         print("\n[SHUTDOWN] Signal received. Gracefully flushing and releasing lease...")

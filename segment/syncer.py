@@ -35,16 +35,20 @@ class ParquetSegmentSyncer:
         coordinator: Any,
         dataset_repo: str = config.SEGMENTED_DATASET_REPO,
         shard_threshold: int = config.SHARD_CLIP_THRESHOLD,
+        buffer_gb: float = config.BUFFER_GB,
         telegram_bot: Any = None
     ):
         self.api = api
         self.coordinator = coordinator
         self.dataset_repo = dataset_repo
         self.shard_threshold = shard_threshold
+        self.buffer_gb = buffer_gb if buffer_gb is not None else getattr(config, "BUFFER_GB", 1.0)
+        self.target_buffer_bytes = int(self.buffer_gb * (1024**3))
         self.telegram_bot = telegram_bot
         self.worker_id = coordinator.worker_id
 
         self.buffered_rows: List[Dict[str, Any]] = []
+        self.buffered_bytes: int = 0
         self.buffered_videos: Dict[str, Dict[str, Any]] = {}
         self.shard_index: int = 0
 
@@ -154,6 +158,7 @@ class ParquetSegmentSyncer:
                 "video_id": video_id,
                 "segment_id": seg_id
             })
+            self.buffered_bytes += len(audio_bytes)
             added_clips += 1
             video_duration += dur
 
@@ -167,7 +172,9 @@ class ParquetSegmentSyncer:
                 "worker": self.worker_id
             }
 
-        print(f"[SEGMENT SYNCER] Added {added_clips} valid clips (Current buffer: {len(self.buffered_rows)}/{self.shard_threshold}).")
+        cur_mb = self.buffered_bytes / (1024 * 1024)
+        target_mb = self.target_buffer_bytes / (1024 * 1024)
+        print(f"[SEGMENT SYNCER] Added {added_clips} valid clips (Current buffer: {cur_mb:.1f} MB / {target_mb:.0f} MB [{len(self.buffered_rows)}/{self.shard_threshold} clips]).")
 
         # Immediately purge local sliced audio files and raw audio for this video
         try:
@@ -176,15 +183,18 @@ class ParquetSegmentSyncer:
                 shutil.rmtree(target_video_dir, ignore_errors=True)
             for f in staging_dir.glob(f"{video_id}*.*"):
                 f.unlink(missing_ok=True)
-            print(f"[SEGMENT SYNCER] Purged local audio staging for {video_id} (Disk usage strictly < 1.0 GB).")
+            print(f"[SEGMENT SYNCER] Purged local audio staging for {video_id} (Disk usage strictly protected).")
         except Exception as e:
             print(f"[SEGMENT SYNCER] Cleanup notice: {e}")
 
         self.check_disk_quota()
 
-        # Flush shard if buffer has reached or exceeded threshold (~300-500 clips)
-        if len(self.buffered_rows) >= self.shard_threshold:
-            print(f"[SEGMENT SYNCER] Buffer reached threshold ({len(self.buffered_rows)} clips). Flushing Parquet shard...")
+        # Flush shard if buffer has reached or exceeded GB size threshold or clip count
+        reached_size = self.buffered_bytes >= self.target_buffer_bytes
+        reached_count = len(self.buffered_rows) >= self.shard_threshold
+        if reached_size or reached_count:
+            reason = f"{cur_mb:.1f} MB reached" if reached_size else f"{len(self.buffered_rows)} clips reached"
+            print(f"[SEGMENT SYNCER] Buffer reached threshold ({reason}). Flushing Parquet shard...")
             self.flush_shard()
 
         print(f"========================================================\n")
@@ -292,6 +302,7 @@ class ParquetSegmentSyncer:
         # 5. Reset buffer and increment shard index
         self.buffered_rows.clear()
         self.buffered_videos.clear()
+        self.buffered_bytes = 0
         self.shard_index += 1
 
         print(f"[SEGMENT SYNCER] Shard flush complete. Disk usage clean and under 1.0 GB.\n")

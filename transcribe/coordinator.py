@@ -86,6 +86,8 @@ class TranscriptionCoordinator:
                 "    dtype: string\n"
                 "  - name: duration\n"
                 "    dtype: float64\n"
+                "  - name: channel_name\n"
+                "    dtype: string\n"
                 "  - name: video_id\n"
                 "    dtype: string\n"
                 "  - name: segment_id\n"

@@ -156,7 +156,7 @@ class TestTwoTierPipeline(unittest.TestCase):
         table = pq.read_table(reader)
 
         self.assertEqual(table.num_rows, 2)
-        self.assertEqual(table.column_names, ["audio", "sentence", "duration", "video_id", "segment_id", "emotion"])
+        self.assertEqual(table.column_names, ["audio", "sentence", "duration", "channel_name", "video_id", "segment_id", "emotion"])
 
         # Check audio struct
         audio_col = table["audio"]

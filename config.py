@@ -23,8 +23,14 @@ DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
 # Determine runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")
 WORKING_DIR = Path("/kaggle/working" if IS_KAGGLE else "./data").resolve()
-STAGING_DIR = WORKING_DIR / "staging_audios"
+# Use /tmp on Kaggle when available (over 30GB+ available space, preserving /kaggle/working 20GB limit)
+TMP_ROOT = Path("/tmp/asr_cache") if (IS_KAGGLE and Path("/tmp").exists()) else WORKING_DIR
+STAGING_DIR = Path(os.getenv("STAGING_DIR", str(TMP_ROOT / "staging_audios"))).resolve()
 STAGING_DIR.mkdir(parents=True, exist_ok=True)
+
+# Buffer & GB Flushing Controls
+BUFFER_GB = float(os.getenv("BUFFER_GB", os.getenv("BUFFER_FLUSH_GB", "1.0")))
+BUFFER_BYTES = int(BUFFER_GB * (1024**3))
 
 # Cloudflare Binary Path
 CLOUDFLARED_BIN = WORKING_DIR / "cloudflared"

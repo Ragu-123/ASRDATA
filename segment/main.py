@@ -25,7 +25,7 @@ from segment.coordinator import SegmentCoordinator
 from segment.segmenter import AudioSegmenter
 from segment.syncer import ParquetSegmentSyncer
 
-def print_banner(dataset_repo: str, channel: str = ""):
+def print_banner(dataset_repo: str, channel: str = "", buffer_gb: float = config.BUFFER_GB):
     print("\n" + "="*70)
     print("✂️  TAMIL ASR DISTRIBUTED AUDIO SEGMENTER & SILENCE DETECTOR")
     print("="*70)
@@ -33,8 +33,8 @@ def print_banner(dataset_repo: str, channel: str = ""):
     print(f"📦 Tracking Bucket:   {config.TRACKING_BUCKET}")
     print(f"🎯 Segmented Dataset: {dataset_repo}")
     print(f"⏱️  Target Clip Size:  {config.TARGET_CHUNK_SEC}s (Window: {config.VAD_MIN_CHUNK_SEC}-{config.VAD_MAX_CHUNK_SEC}s)")
-    print(f"💾 Shard Threshold:   {config.SHARD_CLIP_THRESHOLD} clips (~70 MB per Parquet shard)")
-    print(f"🛡️  Disk Quota Guard:  Strictly under {config.MAX_LOCAL_DISK_GB} GB (< 19GB limit)")
+    print(f"📦 Shard Target Size: {buffer_gb:.1f} GB per Parquet shard (Single commit per shard)")
+    print(f"🛡️  Staging Directory: {config.STAGING_DIR}")
     if channel:
         print(f"📺 Active Channel:    {channel}")
     print("="*70 + "\n")
@@ -45,6 +45,7 @@ def run_segment_pipeline(
     dataset_repo: str = config.SEGMENTED_DATASET_REPO,
     batch_size: int = config.BATCH_LEASE_SIZE,
     shard_threshold: int = config.SHARD_CLIP_THRESHOLD,
+    buffer_gb: float = config.BUFFER_GB,
     run_once: bool = False
 ):
     hf_token = config.get_hf_token()
@@ -87,13 +88,14 @@ def run_segment_pipeline(
         coordinator=coordinator,
         dataset_repo=dataset_repo,
         shard_threshold=shard_threshold,
+        buffer_gb=buffer_gb,
         telegram_bot=telegram_bot
     )
 
     if channel_input:
         coordinator.add_channel(channel_input)
 
-    print_banner(dataset_repo=dataset_repo, channel=channel_input)
+    print_banner(dataset_repo=dataset_repo, channel=channel_input, buffer_gb=buffer_gb)
 
     running = True
 
@@ -122,10 +124,13 @@ def run_segment_pipeline(
     # If single video requested directly:
     if video_id_input:
         print(f"[SEGMENT] Processing single video: {video_id_input}")
+        ch_name = channel_input
+        if not ch_name or ch_name.lower() in ["manual", "unknown"]:
+            ch_name = segmenter.resolve_channel_name(video_id_input, default="Unknown")
         v_meta = {
             "video_id": video_id_input,
             "title": video_id_input,
-            "channel_name": channel_input or "Manual",
+            "channel_name": ch_name,
             "duration_seconds": 0.0
         }
         raw_audio = segmenter.fetch_audio(video_id_input, config.STAGING_DIR)
@@ -186,9 +191,13 @@ def run_segment_pipeline(
             # Ingest into Parquet Shard Buffer (auto-flushes when threshold reached)
             syncer.sync_video_segments(vid_meta, segments, config.STAGING_DIR)
 
-        # Flush any remaining clips at the end of the batch
-        if syncer.buffered_rows:
+        # Check if buffer has reached target GB or threshold
+        if syncer.buffered_bytes >= syncer.target_buffer_bytes or len(syncer.buffered_rows) >= syncer.shard_threshold:
             syncer.flush_shard()
+        else:
+            cur_mb = syncer.buffered_bytes / (1024 * 1024)
+            target_mb = syncer.target_buffer_bytes / (1024 * 1024)
+            print(f"[SEGMENT] Buffer at {cur_mb:.1f} MB / {target_mb:.0f} MB ({len(syncer.buffered_rows)} clips). Continuing to next batch...")
 
         # Release current lease after batch is complete
         coordinator.release_lease()
@@ -212,7 +221,8 @@ def main():
     parser.add_argument("--video-id", "-v", dest="video_id", type=str, default="", help="Specific YouTube video ID to segment")
     parser.add_argument("--dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Target Hugging Face Dataset for segmented shards (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 5)")
-    parser.add_argument("--shard-threshold", "--threshold", dest="shard_threshold", type=int, default=config.SHARD_CLIP_THRESHOLD, help="Clips per Parquet shard (default: 400, ~70 MB)")
+    parser.add_argument("--shard-threshold", "--threshold", dest="shard_threshold", type=int, default=config.SHARD_CLIP_THRESHOLD, help=f"Max clips per Parquet shard fallback (default: {config.SHARD_CLIP_THRESHOLD})")
+    parser.add_argument("--buffer-gb", "--buffer_gb", "--shard-gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Target Parquet shard size in GB (default: {config.BUFFER_GB} GB)")
     parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
     parser.add_argument("--cookies", "--cookie", "--cookie-file", dest="cookies", nargs="*", default=[], help="Path to YouTube cookies.txt file")
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
@@ -237,6 +247,7 @@ def main():
         dataset_repo=args.dataset,
         batch_size=args.batch_size,
         shard_threshold=args.shard_threshold,
+        buffer_gb=args.buffer_gb,
         run_once=bool(getattr(args, "once", False))
     )
 

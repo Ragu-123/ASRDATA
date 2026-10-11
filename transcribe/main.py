@@ -32,7 +32,7 @@ from transcribe.syncer import ParquetDatasetSyncer, BucketSyncer
 from transcribe.disk_guard import DiskGuard
 from transcribe.telegram_bot import TelegramClusterBot
 
-def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = config.SEGMENTED_DATASET_REPO, audited_dataset: str = config.DATASET_REPO, bot_active: bool = False):
+def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = config.SEGMENTED_DATASET_REPO, audited_dataset: str = config.DATASET_REPO, buffer_gb: float = config.BUFFER_GB, bot_active: bool = False):
     print("\n" + "="*70)
     print("🎙️  TAMIL ASR DISTRIBUTED TRANSCRIPTION ENGINE (TWO-TIER ARCHITECTURE)")
     print("="*70)
@@ -40,11 +40,12 @@ def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = conf
     print(f"📦 Tier 1 Tracking:    {config.TRACKING_BUCKET} (< 5MB, zero audio)")
     print(f"✂️  Segmented Dataset:  {segmented_dataset} (Input Shards)")
     print(f"🎯 Audited Dataset:    {audited_dataset} (Final Corpus)")
+    print(f"📦 Target Shard Size:  {buffer_gb:.1f} GB per Parquet shard (Single commit per shard)")
     print(f"⚡ Concurrency:        {concurrency} parallel requests (Sweet spot: 3 to 5)")
     print(f"🤖 Gemini Model:       {config.MODEL_NAME}")
     print(f"🔗 Gemini Proxy:       {proxy_url}")
     print(f"🤖 Telegram Bot:       {'ONLINE' if bot_active else 'OFFLINE'}")
-    print(f"💾 Local Disk Quota:   Strictly under {config.MAX_LOCAL_DISK_GB} GB")
+    print(f"💾 Staging Directory:  {config.STAGING_DIR}")
     print("="*70 + "\n")
 
 async def run_transcription_pipeline(
@@ -53,6 +54,7 @@ async def run_transcription_pipeline(
     batch_size: int = config.BATCH_LEASE_SIZE,
     segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
     audited_dataset: str = config.DATASET_REPO,
+    buffer_gb: float = config.BUFFER_GB,
     run_once: bool = False
 ):
     # 1. Retrieve Hugging Face Token
@@ -98,6 +100,7 @@ async def run_transcription_pipeline(
         coordinator=coordinator,
         dataset_repo=audited_dataset,
         shard_threshold=config.SHARD_CLIP_THRESHOLD,
+        buffer_gb=buffer_gb,
         telegram_bot=telegram_bot
     )
     if telegram_bot:
@@ -124,6 +127,7 @@ async def run_transcription_pipeline(
         concurrency=concurrency,
         segmented_dataset=segmented_dataset,
         audited_dataset=audited_dataset,
+        buffer_gb=buffer_gb,
         bot_active=(telegram_bot is not None)
     )
 
@@ -229,8 +233,12 @@ async def run_transcription_pipeline(
                 print(f"[STAGE 2] Audited {len(audited)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
 
                 syncer.sync_audited_segments(audited, shard_id=shard_file)
-                if syncer.buffered_rows:
+                if syncer.buffered_bytes >= syncer.target_buffer_bytes or len(syncer.buffered_rows) >= syncer.shard_threshold:
                     syncer.flush_shard()
+                else:
+                    cur_mb = syncer.buffered_bytes / (1024 * 1024)
+                    target_mb = syncer.target_buffer_bytes / (1024 * 1024)
+                    print(f"[TRANSCRIBER] Buffer at {cur_mb:.1f} MB / {target_mb:.0f} MB ({len(syncer.buffered_rows)} clips). Continuing to next shard before uploading...")
 
                 # Mark shard completed in manifest
                 manifest = coordinator.load_manifest(force=True)
@@ -306,8 +314,13 @@ async def run_transcription_pipeline(
             syncer.sync_video_transcripts(vid_meta, audited_segments, config.STAGING_DIR)
             disk_guard.check_and_clean(emergency_sync_cb=syncer.flush_shard)
 
-        if syncer.buffered_rows:
+        # Check if buffer has reached target GB or threshold
+        if syncer.buffered_bytes >= syncer.target_buffer_bytes or len(syncer.buffered_rows) >= syncer.shard_threshold:
             syncer.flush_shard()
+        else:
+            cur_mb = syncer.buffered_bytes / (1024 * 1024)
+            target_mb = syncer.target_buffer_bytes / (1024 * 1024)
+            print(f"[TRANSCRIBER] Buffer at {cur_mb:.1f} MB / {target_mb:.0f} MB ({len(syncer.buffered_rows)} clips). Continuing to next batch...")
 
         coordinator.release_lease()
 
@@ -332,6 +345,7 @@ def main():
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
     parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
+    parser.add_argument("--buffer-gb", "--buffer_gb", "--shard-gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Target Parquet shard size in GB (default: {config.BUFFER_GB} GB)")
     parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
     parser.add_argument("--cookies", "--cookie", "--cookie-file", dest="cookies", nargs="*", default=[], help="Path to YouTube cookies.txt file")
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
@@ -371,6 +385,7 @@ def main():
         batch_size=args.batch_size,
         segmented_dataset=args.segmented_dataset,
         audited_dataset=args.audited_dataset,
+        buffer_gb=args.buffer_gb,
         run_once=args.once
     ))
 

@@ -843,8 +843,9 @@ class TelegramClusterBot:
                                 pass
 
                             alert_msg = (
-                                f"ℹ️ *Cluster Inactive Node Purge*\n\n"
+                                f"🚨 *Cluster STALL ALERT / Inactive Node Purge*\n\n"
                                 f"• *Node*: `{w_id}` ({stage})\n"
+                                f"• *Video*: `{v_id}`\n"
                                 f"• *Notice*: Inactive for >{mins} mins (session ended or disconnected).\n"
                                 f"• *Action*: Worker cleanly deregistered; any leased videos released back to queue."
                             )

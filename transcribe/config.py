@@ -6,9 +6,11 @@ from pathlib import Path
 # Runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")
 WORKING_DIR = Path("/kaggle/working" if IS_KAGGLE else "./data").resolve()
-STAGING_DIR = WORKING_DIR / "transcribe_staging"
+# Use /tmp on Kaggle when available (over 30GB+ available space, preserving /kaggle/working 20GB limit)
+TMP_ROOT = Path("/tmp/asr_cache") if (IS_KAGGLE and Path("/tmp").exists()) else WORKING_DIR
+STAGING_DIR = Path(os.getenv("STAGING_DIR", str(TMP_ROOT / "transcribe_staging"))).resolve()
 STAGING_DIR.mkdir(parents=True, exist_ok=True)
-SHARDS_DIR = WORKING_DIR / "shards"
+SHARDS_DIR = Path(os.getenv("SHARDS_DIR", str(TMP_ROOT / "transcribe_shards"))).resolve()
 SHARDS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Ensure root is in sys.path
@@ -44,9 +46,11 @@ SEGMENTED_DATASET_REPO = os.getenv("SEGMENTED_DATASET_REPO", "King758/tamil-asr-
 DATASET_REPO = os.getenv("DATASET_REPO", "King758/tamil-asr-corpus")
 AUDITED_DATASET_REPO = DATASET_REPO
 
-# Quota & Shard Controls
-SHARD_CLIP_THRESHOLD = int(os.getenv("SHARD_CLIP_THRESHOLD", "400"))  # ~300-500 clips (~70 MB)
-MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "1.0"))       # Strictly under 1.0 GB local disk
+# Quota & Shard Controls (Target ~1 GB Parquet Shards)
+BUFFER_GB = float(os.getenv("BUFFER_GB", os.getenv("SHARD_GB", "1.0")))
+BUFFER_BYTES = int(BUFFER_GB * (1024**3))
+SHARD_CLIP_THRESHOLD = int(os.getenv("SHARD_CLIP_THRESHOLD", "5000"))
+MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "5.0"))
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")

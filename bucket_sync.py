@@ -55,13 +55,32 @@ class BucketSync:
             t0 = time.time()
             if self.storage_type == "dataset":
                 self.api.create_repo(repo_id=self.raw_storage, repo_type="dataset", exist_ok=True)
-                for f in audio_files:
-                    self.api.upload_file(
-                        path_or_fileobj=str(f),
-                        path_in_repo=f"audios/{f.name}",
+                total_mb = sum(f.stat().st_size for f in audio_files) / (1024**2)
+                # Upload all buffered audios in a SINGLE COMMIT to eliminate HF 429 rate limit (128 commits/hr)
+                try:
+                    from huggingface_hub import CommitOperationAdd
+                    operations = [
+                        CommitOperationAdd(
+                            path_in_repo=f"audios/{f.name}",
+                            path_or_fileobj=str(f)
+                        )
+                        for f in audio_files
+                    ]
+                    self.api.create_commit(
                         repo_id=self.raw_storage,
-                        repo_type="dataset"
+                        repo_type="dataset",
+                        operations=operations,
+                        commit_message=f"Add {len(audio_files)} raw audios from {getattr(config, 'NODE_ID', 'node')} ({total_mb:.1f} MB)"
                     )
+                except Exception as commit_err:
+                    print(f"[STAGE 1 INGEST] create_commit notice ({commit_err}). Using upload fallback...")
+                    for f in audio_files:
+                        self.api.upload_file(
+                            path_or_fileobj=str(f),
+                            path_in_repo=f"audios/{f.name}",
+                            repo_id=self.raw_storage,
+                            repo_type="dataset"
+                        )
             else:
                 self.api.create_bucket(bucket_id=self.raw_storage, private=False, exist_ok=True)
                 upload_pairs = [(f, f"audios/{f.name}") for f in audio_files]

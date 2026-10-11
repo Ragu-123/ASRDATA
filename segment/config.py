@@ -31,9 +31,11 @@ except Exception:
 # Runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")
 WORKING_DIR = Path("/kaggle/working" if IS_KAGGLE else "./data").resolve()
-STAGING_DIR = WORKING_DIR / "segment_staging"
+# Use /tmp on Kaggle when available (over 30GB+ available space, preserving /kaggle/working 20GB limit)
+TMP_ROOT = Path("/tmp/asr_cache") if (IS_KAGGLE and Path("/tmp").exists()) else WORKING_DIR
+STAGING_DIR = Path(os.getenv("STAGING_DIR", str(TMP_ROOT / "segment_staging"))).resolve()
 STAGING_DIR.mkdir(parents=True, exist_ok=True)
-SHARDS_DIR = WORKING_DIR / "shards"
+SHARDS_DIR = Path(os.getenv("SHARDS_DIR", str(TMP_ROOT / "segment_shards"))).resolve()
 SHARDS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Storage & Target Repositories
@@ -48,11 +50,11 @@ SOURCE_BUCKET = os.getenv("SOURCE_BUCKET", RAW_BUCKET)
 # Target Segmented Dataset (stores Parquet shards with 10s audio clips & metadata)
 SEGMENTED_DATASET_REPO = os.getenv("SEGMENTED_DATASET_REPO", "King758/tamil-asr-segmented")
 
-# Shard & Disk Controls
-# ~300-500 clips (~70 MB per Parquet shard)
-SHARD_CLIP_THRESHOLD = int(os.getenv("SHARD_CLIP_THRESHOLD", "400"))
-# Strictly maintain local disk usage under 1.0 GB (within 19GB total quota)
-MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "1.0"))
+# Shard & Buffer Controls (Target ~1 GB Parquet Shards)
+BUFFER_GB = float(os.getenv("BUFFER_GB", os.getenv("SHARD_GB", "1.0")))
+BUFFER_BYTES = int(BUFFER_GB * (1024**3))
+SHARD_CLIP_THRESHOLD = int(os.getenv("SHARD_CLIP_THRESHOLD", "5000"))
+MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "5.0"))
 DISK_LIMIT_GB = 19.0
 
 # Audio Slicing & Silence Detection Thresholds

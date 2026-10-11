@@ -15,10 +15,34 @@ if str(ROOT_DIR) not in sys.path:
 from huggingface_hub import HfApi
 import pyarrow as pa
 import pyarrow.parquet as pq
+import httpx
 
 import transcribe.config as config
 from transcribe.coordinator import TranscriptionCoordinator
 from transcribe.disk_guard import DiskGuard
+
+_channel_cache: Dict[str, str] = {}
+
+def resolve_channel_name(video_id: str, default: str = "Unknown") -> str:
+    """Resolve author/channel name using lightweight YouTube oEmbed API without auth."""
+    if not video_id or video_id == "unknown":
+        return default
+    if default and default.lower() not in ["", "manual", "unknown", "unspecified"]:
+        return default
+    if video_id in _channel_cache:
+        return _channel_cache[video_id]
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            resp = client.get(f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json")
+            if resp.status_code == 200:
+                name = resp.json().get("author_name")
+                if name:
+                    _channel_cache[video_id] = name
+                    return name
+    except Exception:
+        pass
+    _channel_cache[video_id] = default
+    return default
 
 class ParquetDatasetSyncer:
     """
@@ -37,16 +61,20 @@ class ParquetDatasetSyncer:
         coordinator: TranscriptionCoordinator,
         dataset_repo: str = config.DATASET_REPO,
         shard_threshold: int = config.SHARD_CLIP_THRESHOLD,
+        buffer_gb: float = config.BUFFER_GB,
         telegram_bot: Any = None
     ):
         self.api = api
         self.coordinator = coordinator
         self.dataset_repo = dataset_repo
         self.shard_threshold = shard_threshold
+        self.buffer_gb = buffer_gb if buffer_gb is not None else getattr(config, "BUFFER_GB", 1.0)
+        self.target_buffer_bytes = int(self.buffer_gb * (1024**3))
         self.telegram_bot = telegram_bot
         self.worker_id = coordinator.worker_id
 
         self.buffered_rows: List[Dict[str, Any]] = []
+        self.buffered_bytes: int = 0
         self.buffered_videos: Dict[str, Dict[str, Any]] = {}
         self.shard_index: int = 0
 
@@ -65,6 +93,7 @@ class ParquetDatasetSyncer:
                     "audio": {"_type": "Audio"},
                     "sentence": {"dtype": "string", "_type": "Value"},
                     "duration": {"dtype": "float64", "_type": "Value"},
+                    "channel_name": {"dtype": "string", "_type": "Value"},
                     "video_id": {"dtype": "string", "_type": "Value"},
                     "segment_id": {"dtype": "string", "_type": "Value"},
                     "emotion": {"dtype": "string", "_type": "Value"}
@@ -75,6 +104,7 @@ class ParquetDatasetSyncer:
             ("audio", self.audio_type),
             ("sentence", pa.string()),
             ("duration", pa.float64()),
+            ("channel_name", pa.string()),
             ("video_id", pa.string()),
             ("segment_id", pa.string()),
             ("emotion", pa.string())
@@ -119,6 +149,8 @@ class ParquetDatasetSyncer:
         added_clips = 0
         video_duration = 0.0
 
+        ch_name = resolve_channel_name(video_id, video_meta.get("channel_name") or video_meta.get("channel") or "Unknown")
+
         for s in audited_segments:
             seg_id = s.get("segment_id")
             clean_text = (s.get("clean_text") or s.get("audited_text") or s.get("transcript") or "").strip()
@@ -145,32 +177,39 @@ class ParquetDatasetSyncer:
                 "audio": {"bytes": audio_bytes, "path": f"{seg_id}.m4a"},
                 "sentence": clean_text,
                 "duration": dur,
+                "channel_name": ch_name,
                 "video_id": video_id,
                 "segment_id": seg_id,
                 "emotion": emotion
             })
+            self.buffered_bytes += len(audio_bytes) if audio_bytes is not None else 0
             added_clips += 1
             video_duration += dur
 
         if added_clips > 0:
             self.buffered_videos[video_id] = {
                 "title": video_meta.get("title", ""),
-                "channel": video_meta.get("channel", "Unknown"),
+                "channel": ch_name,
                 "duration_seconds": round(video_duration if video_duration > 0 else total_dur, 2),
                 "segments_count": added_clips,
                 "transcribed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "worker": self.worker_id
             }
 
-        print(f"[PARQUET SYNCER] Added {added_clips} valid clips (Current buffer: {len(self.buffered_rows)}/{self.shard_threshold}).")
+        cur_mb = self.buffered_bytes / (1024 * 1024)
+        target_mb = self.target_buffer_bytes / (1024 * 1024)
+        print(f"[PARQUET SYNCER] Added {added_clips} valid clips (Current buffer: {cur_mb:.1f} MB / {target_mb:.0f} MB [{len(self.buffered_rows)}/{self.shard_threshold} clips]).")
 
         # Immediately purge local sliced audios for this video
         DiskGuard.cleanup_video_artifacts(video_id, staging_dir)
         print(f"[PARQUET SYNCER] Purged local audio staging for {video_id} (Disk strictly protected).")
 
-        # Flush shard if buffer has reached or exceeded threshold (~300-500 clips)
-        if len(self.buffered_rows) >= self.shard_threshold:
-            print(f"[PARQUET SYNCER] Buffer reached threshold ({len(self.buffered_rows)} clips). Flushing Parquet shard...")
+        # Flush shard if buffer has reached or exceeded GB size threshold or clip count
+        reached_size = self.buffered_bytes >= self.target_buffer_bytes
+        reached_count = len(self.buffered_rows) >= self.shard_threshold
+        if reached_size or reached_count:
+            reason = f"{cur_mb:.1f} MB reached" if reached_size else f"{len(self.buffered_rows)} clips reached"
+            print(f"[PARQUET SYNCER] Buffer reached threshold ({reason}). Flushing Parquet shard...")
             self.flush_shard()
 
         print(f"========================================================\n")
@@ -201,20 +240,25 @@ class ParquetDatasetSyncer:
                 except Exception:
                     continue
 
+            raw_ch = s.get("channel_name") or s.get("channel") or "Unknown"
+            ch_name = resolve_channel_name(vid_id, raw_ch)
+
             self.buffered_rows.append({
                 "audio": {"bytes": audio_bytes, "path": f"{seg_id}.m4a"},
                 "sentence": clean_text,
                 "duration": dur,
+                "channel_name": ch_name,
                 "video_id": vid_id,
                 "segment_id": seg_id,
                 "emotion": emotion
             })
+            self.buffered_bytes += len(audio_bytes) if audio_bytes is not None else 0
             added_clips += 1
 
             if vid_id not in self.buffered_videos:
                 self.buffered_videos[vid_id] = {
                     "title": s.get("title", vid_id),
-                    "channel": s.get("channel_name", "Unknown"),
+                    "channel": ch_name,
                     "duration_seconds": round(dur, 2),
                     "segments_count": 1,
                     "transcribed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -224,8 +268,14 @@ class ParquetDatasetSyncer:
                 self.buffered_videos[vid_id]["segments_count"] += 1
                 self.buffered_videos[vid_id]["duration_seconds"] = round(self.buffered_videos[vid_id]["duration_seconds"] + dur, 2)
 
-        print(f"[PARQUET SYNCER] Ingested {added_clips} audited clips from shard '{shard_id}' (Buffer: {len(self.buffered_rows)}/{self.shard_threshold}).")
-        if len(self.buffered_rows) >= self.shard_threshold:
+        cur_mb = self.buffered_bytes / (1024 * 1024)
+        target_mb = self.target_buffer_bytes / (1024 * 1024)
+        print(f"[PARQUET SYNCER] Ingested {added_clips} audited clips from shard '{shard_id}' (Current buffer: {cur_mb:.1f} MB / {target_mb:.0f} MB [{len(self.buffered_rows)}/{self.shard_threshold} clips]).")
+        reached_size = self.buffered_bytes >= self.target_buffer_bytes
+        reached_count = len(self.buffered_rows) >= self.shard_threshold
+        if reached_size or reached_count:
+            reason = f"{cur_mb:.1f} MB reached" if reached_size else f"{len(self.buffered_rows)} clips reached"
+            print(f"[PARQUET SYNCER] Buffer reached threshold ({reason}). Flushing Parquet shard...")
             self.flush_shard()
         return True
 
@@ -331,6 +381,7 @@ class ParquetDatasetSyncer:
         # 5. Reset buffer and increment shard index
         self.buffered_rows.clear()
         self.buffered_videos.clear()
+        self.buffered_bytes = 0
         self.shard_index += 1
 
         print(f"[PARQUET SYNCER] Shard flush complete. Local storage clean and under 1.0 GB.\n")
