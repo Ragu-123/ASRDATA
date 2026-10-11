@@ -71,6 +71,40 @@ class TranscriptionCoordinator:
         # 2. Tier 2 Hugging Face Dataset
         try:
             self.api.create_repo(repo_id=self.dataset_repo, repo_type="dataset", exist_ok=True)
+            card = (
+                "---\n"
+                "configs:\n"
+                "- config_name: default\n"
+                "  data_files:\n"
+                "  - split: train\n"
+                "    path: data/*.parquet\n"
+                "dataset_info:\n"
+                "  features:\n"
+                "  - name: audio\n"
+                "    dtype: audio\n"
+                "  - name: sentence\n"
+                "    dtype: string\n"
+                "  - name: duration\n"
+                "    dtype: float64\n"
+                "  - name: video_id\n"
+                "    dtype: string\n"
+                "  - name: segment_id\n"
+                "    dtype: string\n"
+                "  - name: emotion\n"
+                "    dtype: string\n"
+                "---\n\n"
+                "# Tamil ASR Audited Corpus\n"
+                "High-quality audited Tamil speech corpus with embedded audio, verbatim transcriptions, and emotion annotations.\n"
+            )
+            try:
+                self.api.upload_file(
+                    path_or_fileobj=card.encode("utf-8"),
+                    path_in_repo="README.md",
+                    repo_id=self.dataset_repo,
+                    repo_type="dataset"
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"[COORDINATOR] Dataset repo check notice: {e}")
 

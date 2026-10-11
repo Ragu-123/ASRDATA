@@ -82,8 +82,6 @@ class SegmentCoordinator:
                 "    dtype: string\n"
                 "  - name: segment_id\n"
                 "    dtype: string\n"
-                "  splits:\n"
-                "  - name: train\n"
                 "---\n\n"
                 "# Tamil ASR Segmented Dataset\n"
                 "High-quality segmented Tamil speech clips with embedded audio for ASR training.\n"
