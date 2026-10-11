@@ -52,7 +52,7 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
     - Falls back seamlessly to native yt-dlp multi-fragment downloader.
     """
     opts: Dict[str, Any] = {
-        'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
+        'format': '18/ba[ext=m4a]/ba[ext=opus]/ba/b',
         'outtmpl': output_template,
         'quiet': quiet,
         'no_warnings': True,
@@ -71,15 +71,6 @@ def get_ytdlp_audio_opts(output_template: str, quiet: bool = True) -> Dict[str, 
             'preferredquality': '128',
         }],
     }
-
-    cookie_file = getattr(config, "COOKIE_FILE", None)
-    if not cookie_file:
-        for cp in [getattr(config, "WORKING_DIR", Path(".")) / "cookies.txt", Path("cookies.txt")]:
-            if cp.exists() and cp.stat().st_size > 10:
-                cookie_file = str(cp)
-                break
-    if cookie_file:
-        opts["cookiefile"] = cookie_file
 
     if shutil.which("aria2c"):
         opts["external_downloader"] = {"default": "aria2c"}
@@ -117,19 +108,16 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                     err_msg = str(native_err)
                     current_opts = native_opts
 
-            if current_opts.get("cookiefile"):
-                if any(p in err_msg.lower() for p in ["page needs to be reloaded", "requested format is not available", "bot", "sign in"]):
-                    print(f"[INGEST] ⚠️ Cookie/client conflict on {video_id}. Retrying with Android client without cookies...")
-                    android_opts = dict(current_opts)
-                    android_opts.pop("cookiefile", None)
-                    android_opts["extractor_args"] = {
-                        "youtube": {
-                            "player_client": ["android", "android_vr"],
-                            "player_skip": ["web", "tv", "web_embedded"]
-                        }
-                    }
-                    with yt_dlp.YoutubeDL(android_opts) as ydl_android:
-                        return ydl_android.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+            if getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
+                print(f"[INGEST] ⚠️ Retrying {video_id} with authenticated YouTube cookies...")
+                cookie_opts = dict(current_opts)
+                cookie_opts["cookiefile"] = config.COOKIE_FILE
+                cookie_opts.pop("extractor_args", None)
+                try:
+                    with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
+                        return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                except Exception:
+                    pass
 
             raise dl_err
 

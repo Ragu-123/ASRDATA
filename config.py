@@ -121,7 +121,7 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 
 # yt-dlp Bot Detection Bypass Extractor Args
-# Strict Android + iOS + Android VR clients; explicitly skipping web/tv to prevent datacenter IP bot detection
+# Strict Android + iOS + Android VR mobile clients; explicitly skipping web/tv to prevent datacenter IP bot detection
 YTDLP_EXTRACTOR_ARGS = {
     "youtube": {
         "player_client": ["android", "ios", "android_vr"],
