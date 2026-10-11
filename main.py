@@ -1,171 +1,181 @@
+#!/usr/bin/env python3
+"""
+Main CLI Entry Point for Tamil ASR Two-Tier Engine.
+
+Architecture:
+  - Tier 1: Tracking Bucket (King758/asr-tracking-01) for tiny JSON metadata only (< 5 MB).
+            ZERO raw audio files ever stored in buckets!
+  - Tier 2: Hugging Face Dataset (King758/tamil-asr-segmented / King758/tamil-asr-corpus).
+            All audio packaged as compressed Apache Parquet shards (~70 MB per shard).
+  - Disk Guard: Local Kaggle disk maintained strictly under 1.0 GB (< 20 GB quota).
+"""
+
 import os
 import sys
-import time
-import signal
-import threading
-import uvicorn
-from huggingface_hub import HfApi
+import argparse
+from pathlib import Path
 
-import config
-from coordinator import ClusterCoordinator
-from bucket_sync import BucketSync
-from worker import IngestionWorker
-from tunnel import CloudflareTunnel
-import app
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-def print_banner(tunnel_url: str):
+def print_banner(stage: str, channel: str = "", dataset: str = ""):
     print("\n" + "="*70)
-    print("🎙️  TAMIL ASR AUDIO HARVEST HUB - CLUSTER NODE ONLINE")
+    print("🎙️  TAMIL ASR TWO-TIER ENGINE (DATASET SHARDED ARCHITECTURE)")
     print("="*70)
-    print(f"📌 Node ID:         {config.NODE_ID}")
-    print(f"📦 Target Bucket:   {config.BUCKET_ID}")
-    print(f"💾 Working Dir:     {config.WORKING_DIR}")
-    print(f"⚠️  Disk Threshold:  {config.DISK_THRESHOLD_GB} GB (Auto-flush trigger)")
-    print(f"⚡ Batch Lease:     {config.BATCH_LEASE_SIZE} videos per lease")
-    if tunnel_url:
-        print("\n" + "-"*70)
-        print("🌐 LIVE CLUSTER MESH DASHBOARD AVAILABLE AT:")
-        print(f"👉 {tunnel_url}")
-        print("-"*70)
-    else:
-        print(f"🌐 Local Dashboard: http://127.0.0.1:{config.PORT}")
+    print(f"🚀 Execution Stage:   {stage.upper()}")
+    print(f"📦 Tracking Bucket:   King758/asr-tracking-01 (Metadata JSON only, zero audio)")
+    if dataset:
+        print(f"🎯 Target Dataset:    {dataset} (Apache Parquet Shards)")
+    if channel:
+        print(f"📺 Target Channel:    {channel}")
+    print(f"🛡️  Disk Protection:   Strictly < 1.0 GB temp usage (Immediate raw purge)")
+    print(f"🤖 Telegram Bot:       Interactive Menu Bar & Cluster Alerts Active")
     print("="*70 + "\n")
 
-import argparse
-
 def main():
-    parser = argparse.ArgumentParser(description="Tamil ASR Audio Harvest Ingestion Engine")
-    parser.add_argument("--channel", "-c", type=str, default=os.getenv("CHANNEL", os.getenv("CHANNEL_URL", "")), help="YouTube channel URL, handle, or ID to download from (e.g. @madangowri or https://www.youtube.com/@madangowri/videos)")
-    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help=f"Videos per lease (default: {config.BATCH_LEASE_SIZE})")
-    parser.add_argument("--port", type=int, default=config.PORT, help=f"Web server dashboard port (default: {config.PORT})")
-    parser.add_argument("--no-web", "--cli", dest="no_web", action="store_true", help="Run in headless CLI mode without web server")
-    parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    parser = argparse.ArgumentParser(
+        description="Tamil ASR Two-Tier Pipeline CLI (Parquet Datasets + Lightweight Bucket Tracking)"
+    )
+    parser.add_argument(
+        "--stage", "-s",
+        type=str,
+        default=os.getenv("STAGE", "segment"),
+        choices=["segment", "transcribe", "catalog"],
+        help="Pipeline stage to execute: 'segment' (default: download, silence slice & upload Parquet dataset), 'transcribe' (Canvas Gemini proxy transcription), or 'catalog' (upfront scrape only)"
+    )
+    parser.add_argument(
+        "--channel", "-c",
+        type=str,
+        default=os.getenv("CHANNEL", os.getenv("CHANNEL_URL", "")),
+        help="YouTube channel URL, handle, or ID (e.g. @madangowri or https://www.youtube.com/@madangowri/videos)"
+    )
+    parser.add_argument(
+        "--video-id", "-v",
+        dest="video_id",
+        type=str,
+        default="",
+        help="Single YouTube video ID to process directly"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="",
+        help="Target Hugging Face Dataset repo (default: King758/tamil-asr-segmented for segment, King758/tamil-asr-corpus for transcribe)"
+    )
+    parser.add_argument(
+        "--batch-size", "--batch_size",
+        dest="batch_size",
+        type=int,
+        default=5,
+        help="Number of videos to lease per batch (default: 5)"
+    )
+    parser.add_argument(
+        "--shard-threshold", "--threshold",
+        dest="shard_threshold",
+        type=int,
+        default=400,
+        help="Number of ~10s clips per Apache Parquet shard (default: 400, ~70 MB)"
+    )
+    parser.add_argument(
+        "--url",
+        type=str,
+        default=os.getenv("PROXY_URL", os.getenv("CLOUDFLARE_URL", "")),
+        help="Cloudflare Canvas Gemini Proxy URL (for transcribe stage, e.g. https://.../v1)"
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Concurrent transcription requests (default: 4)"
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process a single batch and exit gracefully"
+    )
+    # Backward compatibility flags (no-op so legacy commands don't crash)
+    parser.add_argument("--no-web", "--cli", dest="no_web", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, default=8000, help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
-    # 1. Retrieve Hugging Face Token
-    hf_token = config.get_hf_token()
-    if not hf_token:
-        print("\n[ERROR] HF_TOKEN is not set!", file=sys.stderr)
-        print("On Kaggle: Add 'HF_TOKEN' to your Kaggle Notebook Secrets (Add-ons -> Secrets).", file=sys.stderr)
-        print("Locally: Run 'export HF_TOKEN=your_token' or set HF_TOKEN=your_token in .env.\n", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[BOOT] Initializing node '{config.NODE_ID}'...")
-    api = HfApi(token=hf_token)
-
-    # 2. Setup Coordinator and Bucket Sync
-    coordinator = ClusterCoordinator(api=api, bucket_id=config.BUCKET_ID, node_id=config.NODE_ID)
-    bucket_sync = BucketSync(api=api, coordinator=coordinator)
-
-    # 3. Add or prioritize channel if given
+    stage = args.stage.lower().strip()
     channel_input = args.channel.strip()
-    if not channel_input and sys.stdin.isatty():
+
+    # Prompt interactively only if running in an interactive TTY without channel
+    if not channel_input and stage == "segment" and not args.video_id and sys.stdin.isatty():
         try:
             print("\n" + "="*70)
-            print("📺 YOUTUBE CHANNEL INGESTION")
+            print("📺 YOUTUBE CHANNEL INPUT")
             print("="*70)
-            val = input("👉 Enter YouTube Channel URL/handle (press Enter for default seed channels): ").strip()
+            val = input("👉 Enter YouTube Channel handle or URL (press Enter for default queued channels): ").strip()
             if val:
                 channel_input = val
         except (KeyboardInterrupt, EOFError):
             pass
 
-    if channel_input:
-        print(f"[BOOT] Adding and prioritizing target channel: {channel_input}")
-        coordinator.add_channel(channel_input)
+    # STAGE 1 & 2: AUDIO SEGMENTATION (Direct to Parquet Dataset)
+    if stage in ["segment", "catalog"]:
+        import segment.config as seg_config
+        target_dataset = args.dataset or seg_config.SEGMENTED_DATASET_REPO
 
-    # 4. Initialize Telegram Bot
-    telegram_bot = None
-    if config.TELEGRAM_BOT_TOKEN:
-        try:
-            from transcribe.telegram_bot import TelegramClusterBot
-            telegram_bot = TelegramClusterBot(
-                token=config.TELEGRAM_BOT_TOKEN,
-                admin_id=config.TELEGRAM_ADMIN_ID or "5959376217",
-                coordinator=coordinator
+        print_banner(stage=stage, channel=channel_input, dataset=target_dataset)
+
+        if stage == "catalog":
+            # Upfront channel metadata scraping only (< 1 MB JSON to tracking bucket)
+            from huggingface_hub import HfApi
+            from segment.coordinator import SegmentCoordinator
+            hf_token = seg_config.get_hf_token()
+            if not hf_token:
+                print("[ERROR] HF_TOKEN is not set in secrets or environment!", file=sys.stderr)
+                sys.exit(1)
+            api = HfApi(token=hf_token)
+            coordinator = SegmentCoordinator(api=api, dataset_repo=target_dataset)
+            if channel_input:
+                coordinator.add_channel(channel_input)
+                print(f"✅ Channel '{channel_input}' catalog scraped and queued in tracking bucket successfully!")
+            else:
+                print("⚠️ Please specify --channel <url> to scrape.")
+            return
+
+        from segment.main import run_segment_pipeline
+        run_segment_pipeline(
+            channel_input=channel_input,
+            video_id_input=args.video_id,
+            dataset_repo=target_dataset,
+            batch_size=args.batch_size,
+            shard_threshold=args.shard_threshold,
+            run_once=args.once
+        )
+
+    # STAGE 3: GEMINI CANVAS TRANSCRIPTION (From Segmented Dataset to Audited Corpus)
+    elif stage == "transcribe":
+        import asyncio
+        import transcribe.config as trans_config
+        from transcribe.main import run_transcription_pipeline
+
+        target_dataset = args.dataset or trans_config.DATASET_REPO
+        segmented_repo = trans_config.SEGMENTED_DATASET_REPO
+
+        print_banner(stage=stage, dataset=target_dataset)
+
+        proxy_url = args.url.strip()
+        if not proxy_url:
+            print("[ERROR] --url <Cloudflare_Proxy_URL> is required for transcription stage!", file=sys.stderr)
+            print("Example: python main.py --stage transcribe --url https://your-worker.workers.dev/v1", file=sys.stderr)
+            sys.exit(1)
+
+        asyncio.run(
+            run_transcription_pipeline(
+                proxy_url=proxy_url,
+                concurrency=args.concurrency,
+                batch_size=args.batch_size,
+                segmented_dataset=segmented_repo,
+                audited_dataset=target_dataset,
+                run_once=args.once
             )
-            telegram_bot.start_background_thread()
-            env_str = "Kaggle" if config.IS_KAGGLE else "Local"
-            telegram_bot.send_message(
-                f"🚀 *Worker `{config.NODE_ID}` started (Ingestion / Stage 1) on {env_str}!*\n\n"
-                f"• *Bucket*: `{config.BUCKET_ID}`\n"
-                f"• *Batch Size*: `{args.batch_size}` videos\n"
-                f"• *Status*: Active and streaming downloads"
-            )
-            print("[BOOT] Telegram cluster monitor bot connected and running.")
-        except Exception as e:
-            print(f"[BOOT] Notice starting Telegram bot: {e}")
-    else:
-        print("[BOOT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
-
-    # 5. Start Cloudflare Tunnel (if web enabled)
-    tunnel = None
-    tunnel_url = ""
-    if not args.no_web:
-        tunnel = CloudflareTunnel(port=args.port)
-        tunnel_url = tunnel.start()
-
-    # 6. Initialize Worker
-    worker = IngestionWorker(coordinator=coordinator, bucket_sync=bucket_sync, tunnel_url=tunnel_url, telegram_bot=telegram_bot)
-    if telegram_bot:
-        worker.startup_notified = True
-
-    # Connect references to FastAPI app
-    app.coordinator_ref = coordinator
-    app.worker_ref = worker
-
-    # Signal Handlers for Graceful Shutdown
-    def shutdown_handler(signum, frame):
-        print("\n[SHUTDOWN] Signal received. Gracefully flushing and releasing lease...")
-        if telegram_bot:
-            try:
-                telegram_bot.send_message(f"⏹️ *Worker `{config.NODE_ID}` stopped (shutdown signal received)*")
-            except Exception:
-                pass
-        worker.stop()
-        coordinator.deregister_worker()
-        if tunnel:
-            tunnel.stop()
-        if telegram_bot:
-            telegram_bot.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
-
-    # 7. Start Ingestion Worker
-    worker.start()
-    print_banner(tunnel_url)
-
-    if args.no_web:
-        print(f"[BOOT] Running in CLI ingestion mode. Downloading videos for channel(s)...")
-        try:
-            while worker.running:
-                time.sleep(2)
-                if args.once and worker.session_count > 0:
-                    break
-        except (KeyboardInterrupt, SystemExit):
-            pass
-        finally:
-            worker.stop()
-            coordinator.deregister_worker()
-            if telegram_bot:
-                telegram_bot.stop()
-        return
-
-    # 8. Start FastAPI Web Server (Runs until interrupted)
-    try:
-        uvicorn.run(app.app, host="0.0.0.0", port=args.port, log_level="warning")
-    except (KeyboardInterrupt, SystemExit):
-        pass
-    finally:
-        worker.stop()
-        coordinator.deregister_worker()
-        if tunnel:
-            tunnel.stop()
-        if telegram_bot:
-            telegram_bot.stop()
+        )
 
 if __name__ == "__main__":
     main()

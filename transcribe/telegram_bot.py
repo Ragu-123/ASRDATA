@@ -86,8 +86,49 @@ class TelegramClusterBot:
             print(f"[TELEGRAM BOT] Notice during getMe check: {e}")
         return None
 
-    def setup_bot_commands(self) -> bool:
-        """Register the bot command menu with Telegram so the Menu button appears in chat."""
+    def get_reply_keyboard(self) -> Dict[str, Any]:
+        """Persistent interactive menu bar for Telegram UI."""
+        return {
+            "keyboard": [
+                [{"text": "📊 /status"}, {"text": "➕ /add_channel"}],
+                [{"text": "💾 /flush"}, {"text": "⚠️ /errors"}],
+                [{"text": "▶️ /resume"}, {"text": "⏸️ /pause"}, {"text": "❓ /help"}]
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True
+        }
+
+    def normalize_command(self, text: str) -> str:
+        """Map button text or plain text to slash command."""
+        t = text.strip()
+        if t.startswith("/"):
+            return t
+
+        t_lower = t.lower()
+        if "status" in t_lower:
+            return "/status"
+        if "add_channel" in t_lower or "add channel" in t_lower:
+            parts = t.split(maxsplit=1)
+            arg = parts[1] if len(parts) > 1 and not parts[1].startswith("/") else ""
+            return f"/add_channel {arg}".strip()
+        if "help" in t_lower:
+            return "/help"
+        if "errors" in t_lower or "error" in t_lower:
+            return "/errors"
+        if "flush" in t_lower:
+            return "/flush"
+        if "pause" in t_lower:
+            return "/pause"
+        if "resume" in t_lower:
+            return "/resume"
+        if "stop" in t_lower:
+            return "/stop"
+        if "admin" in t_lower:
+            return "/admin"
+        return t
+
+    def setup_bot_commands(self, target_chat_id: Optional[Any] = None) -> bool:
+        """Register the bot command menu and menu button with Telegram so the Menu button appears in chat."""
         if not self.token or not self.base_url:
             return False
         commands = [
@@ -103,16 +144,23 @@ class TelegramClusterBot:
             {"command": "delete_manifest", "description": "🗑️ Reset completed tracking manifest"},
             {"command": "admin", "description": "👑 Show admin lock status"}
         ]
+        cid = target_chat_id or self.admin_chat_id or self.admin_user_id or DEFAULT_ADMIN_ID
         try:
             with httpx.Client(timeout=10.0) as client:
+                # 1. Global command registration
                 resp = client.post(f"{self.base_url}/setMyCommands", json={"commands": commands})
                 ok = resp.status_code == 200 and resp.json().get("ok")
-                if ok:
-                    print("[TELEGRAM BOT] ✅ Bot command menu successfully registered with Telegram!")
-                else:
-                    print(f"[TELEGRAM BOT] Notice setting commands: {resp.status_code} {resp.text}")
 
-                # Ensure Menu button displays commands
+                # 2. Scope for all private chats
+                try:
+                    client.post(
+                        f"{self.base_url}/setMyCommands",
+                        json={"commands": commands, "scope": {"type": "all_private_chats"}}
+                    )
+                except Exception:
+                    pass
+
+                # 3. Global chat menu button
                 try:
                     client.post(
                         f"{self.base_url}/setChatMenuButton",
@@ -121,6 +169,25 @@ class TelegramClusterBot:
                 except Exception:
                     pass
 
+                # 4. Scope and menu button specifically for target user/admin
+                if cid:
+                    try:
+                        c_int = int(cid)
+                        client.post(
+                            f"{self.base_url}/setMyCommands",
+                            json={"commands": commands, "scope": {"type": "chat", "chat_id": c_int}}
+                        )
+                        client.post(
+                            f"{self.base_url}/setChatMenuButton",
+                            json={"chat_id": c_int, "menu_button": {"type": "commands"}}
+                        )
+                    except Exception:
+                        pass
+
+                if ok:
+                    print("[TELEGRAM BOT] ✅ Bot command menu & menu button successfully registered with Telegram!")
+                else:
+                    print(f"[TELEGRAM BOT] Notice setting commands: {resp.status_code} {resp.text}")
                 return ok
         except Exception as e:
             print(f"[TELEGRAM BOT] Notice during setup_bot_commands: {e}")
@@ -227,7 +294,13 @@ class TelegramClusterBot:
 
     # --- PROACTIVE ALERT DISPATCHERS ---
 
-    def send_message(self, text: str, parse_mode: Optional[str] = "Markdown", chat_id: Optional[Any] = None) -> bool:
+    def send_message(
+        self,
+        text: str,
+        parse_mode: Optional[str] = "Markdown",
+        chat_id: Optional[Any] = None,
+        reply_markup: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """Send a proactive Telegram message to the authorized admin with automatic markdown fallback."""
         target_chat_id = chat_id or self.admin_chat_id or self.admin_user_id or DEFAULT_ADMIN_ID
         if not target_chat_id:
@@ -238,10 +311,13 @@ class TelegramClusterBot:
             return False
         try:
             with httpx.Client(timeout=10.0) as client:
+                markup = reply_markup if reply_markup is not None else self.get_reply_keyboard()
                 payload = {
                     "chat_id": target_chat_id,
                     "text": text
                 }
+                if markup:
+                    payload["reply_markup"] = markup
                 if parse_mode:
                     payload["parse_mode"] = parse_mode
                 resp = client.post(f"{self.base_url}/sendMessage", json=payload)
@@ -788,30 +864,16 @@ class TelegramClusterBot:
                     chat_id = chat.get("id")
                     username = sender.get("username", "")
 
-                    if text.startswith("/"):
-                        reply = self.handle_command(text, user_id=user_id, chat_id=chat_id, username=username)
-                        if reply:
-                            try:
-                                with httpx.Client(timeout=10.0) as client:
-                                    resp = client.post(
-                                        f"{self.base_url}/sendMessage",
-                                        json={
-                                            "chat_id": chat_id,
-                                            "text": reply,
-                                            "parse_mode": "Markdown"
-                                        }
-                                    )
-                                    if resp.status_code != 200:
-                                        # Fallback to plain text if Markdown parsing failed
-                                        client.post(
-                                            f"{self.base_url}/sendMessage",
-                                            json={
-                                                "chat_id": chat_id,
-                                                "text": reply
-                                            }
-                                        )
-                            except Exception as e:
-                                print(f"[TELEGRAM BOT] Send reply error: {e}")
+                    if text:
+                        norm_cmd = self.normalize_command(text)
+                        if norm_cmd.startswith("/") or text.startswith("/"):
+                            # Proactively register commands and chat menu button specifically for this chat
+                            if self.is_authorized(user_id, chat_id) or self.admin_user_id is None:
+                                self.setup_bot_commands(target_chat_id=chat_id)
+
+                            reply = self.handle_command(norm_cmd, user_id=user_id, chat_id=chat_id, username=username)
+                            if reply:
+                                self.send_message(text=reply, chat_id=chat_id)
             except Exception as e:
                 print(f"[TELEGRAM BOT] Polling loop notice: {e}")
                 time.sleep(3)
