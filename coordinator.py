@@ -456,6 +456,8 @@ class ClusterCoordinator:
                     'socket_timeout': 30,
                     'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {}),
                 }
+                if hasattr(config, "get_impersonate_target") and config.get_impersonate_target():
+                    ydl_opts['impersonate'] = config.get_impersonate_target()
                 if not is_search:
                     ydl_opts['playliststart'] = start_idx
                     ydl_opts['playlistend'] = end_idx

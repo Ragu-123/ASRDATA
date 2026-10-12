@@ -8,3 +8,5 @@ openai>=1.0.0
 httpx>=0.25.0
 pyarrow>=14.0.0
 tqdm>=4.66.0
+curl_cffi>=0.7.0
+

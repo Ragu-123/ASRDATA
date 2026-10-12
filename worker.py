@@ -278,6 +278,7 @@ class IngestionWorker:
                 'fragment_retries': 5,
                 'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {}),
                 'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', ['ejs:github']),
+                'sleep_interval_requests': 0.5,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
@@ -285,6 +286,11 @@ class IngestionWorker:
                 }],
                 'progress_hooks': [ydl_hook]
             }
+
+            # Enable curl_cffi browser TLS impersonation if available to bypass WAF bot detection
+            impersonate_target = config.get_impersonate_target() if hasattr(config, "get_impersonate_target") else None
+            if impersonate_target:
+                ydl_opts["impersonate"] = impersonate_target
 
             # Use aria2c only if explicitly enabled (native yt-dlp downloader is 10x faster and avoids CDN socket throttling)
             if getattr(config, "USE_ARIA2C", False) and shutil.which("aria2c"):
@@ -304,16 +310,17 @@ class IngestionWorker:
                     "eta": "starting..."
                 }
 
-            # Anti-burst jitter to prevent concurrent bot detection across threads
-            time.sleep(random.uniform(0.2, 0.8))
+            # Anti-burst randomized jitter to break synchronization across parallel streams
+            time.sleep(random.uniform(0.8, 2.5))
 
             def _extract_with_fallback(current_opts):
                 """
                 Robust multi-tier download engine:
-                Tier 1: High-speed native extraction (unauthenticated, bypasses cookie PO token checks)
-                Tier 2: Page reload / GVS PO Token recovery (strip cookies & use mobile player)
-                Tier 3: Login / age-gated fallback (uses authenticated cookies only when required)
-                Tier 4: Mobile Android/iOS player fallback
+                Tier 1: High-speed native extraction with multi-client waterfall & TLS impersonation
+                Tier 2: External Downloader (aria2c) failure -> Native yt-dlp
+                Tier 3: Page reload / GVS PO Token / 403 Forbidden / Bot Challenge recovery (strip cookies & rotate client)
+                Tier 4: Login / age-gated fallback (uses authenticated cookies only when required)
+                Tier 5: Mobile fallback (Android/iOS)
                 """
                 # --- ATTEMPT 1: Primary extraction ---
                 try:
@@ -335,18 +342,19 @@ class IngestionWorker:
                         err_msg = str(native_err)
                         current_opts = native_opts
 
-                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token / 403 Forbidden error ---
-                # YouTube enforces GVS PO Token binding on web/tv sessions with cookies on datacenter IPs.
-                # Stripping cookies and using mobile/clean clients bypasses this instantly!
-                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden"]):
-                    print(f"[WORKER] 🔄 {vid_id} encountered YouTube challenge ({err_msg[:60]}...). Retrying cleanly with mobile player...")
+                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token / 403 Forbidden / Bot Challenge ---
+                # Rotate cleanly to Smart TV (tv_samsung) and Apple Vision (visionos) clients without cookies
+                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden", "sign in to confirm"]):
+                    print(f"[WORKER] 🔄 {vid_id} challenge detected ({err_msg[:60]}...). Retrying with Smart TV / VisionOS clients...")
                     clean_opts = dict(current_opts)
                     clean_opts.pop("cookiefile", None)
                     clean_opts["extractor_args"] = {
                         "youtube": {
-                            "player_client": ["android", "ios"]
+                            "player_client": ["tv_samsung", "visionos", "android", "ios"],
+                            "player_skip": ["web_embedded", "android_vr"]
                         }
                     }
+                    time.sleep(random.uniform(1.0, 2.0))
                     try:
                         with yt_dlp.YoutubeDL(clean_opts) as ydl_clean:
                             return ydl_clean.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)

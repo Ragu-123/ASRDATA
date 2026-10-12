@@ -117,21 +117,28 @@ DENO_PATH = ensure_js_runtime()
 YTDLP_REMOTE_COMPONENTS = ["ejs:github"]
 YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
 
+def get_impersonate_target():
+    """Return ImpersonateTarget for curl_cffi if installed, else None."""
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        return ImpersonateTarget.from_str("chrome")
+    except Exception:
+        return None
+
 def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
-    """Return optimal yt-dlp extractor args.
-    - Uses android/ios mobile player clients by default on Kaggle/cloud environments or when forced,
-      which completely bypasses GVS PO Token challenges, 'page needs to be reloaded' errors, and HTTP 403 CDN errors.
-    - Never force desktop web/tv clients with session cookies on datacenter IPs.
+    """Return optimal yt-dlp extractor args for robust high-volume bulk downloads.
+    - Multi-tier client waterfall: ['tv_samsung', 'visionos', 'android', 'ios']
+      tv_samsung (Samsung Smart TV) & visionos (Apple Vision Pro) completely bypass bot detection and login walls on datacenter IPs.
+      android & ios provide battle-tested audio stream fallbacks.
+    - Skips broken embedded/vr players and redundant webpage calls (youtubetab:skip=webpage).
     """
-    if force_mobile or IS_KAGGLE:
-        return {
-            "youtube": {
-                "player_client": ["android", "ios"]
-            }
-        }
     return {
         "youtube": {
-            "player_client": ["android", "ios", "mweb"]
+            "player_client": ["tv_samsung", "visionos", "android", "ios"],
+            "player_skip": ["web_embedded", "android_vr"]
+        },
+        "youtubetab": {
+            "skip": ["webpage"]
         }
     }
 
@@ -161,7 +168,7 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
         COOKIE_FILE = str(p.resolve())
         os.environ["COOKIE_FILE"] = COOKIE_FILE
         YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
-        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_skip=web_embedded,android_vr"'
+        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=tv_samsung,visionos,android,ios;player_skip=web_embedded,android_vr;youtubetab:skip=webpage"'
         print(f"[CONFIG] 🍪 YouTube Cookies: ACTIVE ({COOKIE_FILE})")
         return COOKIE_FILE
     return None

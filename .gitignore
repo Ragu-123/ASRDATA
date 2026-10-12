@@ -26,3 +26,7 @@ segment_staging/
 shards/
 telegram_admin.json
 .ipynb_checkpoints/
+yt-dlp/
+yt-dlp
+code.py
+
