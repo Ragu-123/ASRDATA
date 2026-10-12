@@ -64,6 +64,19 @@ class IngestionWorker:
         except Exception:
             return 0
 
+    def get_staged_video_ids(self) -> set:
+        """Collect all video IDs currently sitting on disk in staging or pending flush."""
+        ids = set()
+        with self._lock:
+            ids.update(self.pending_manifest_updates.keys())
+        try:
+            for f in config.STAGING_DIR.glob("*.*"):
+                if f.is_file() and f.suffix.lower() in [".m4a", ".opus", ".mp3", ".wav", ".aac", ".ogg", ".webm", ".mp4"]:
+                    ids.add(f.stem)
+        except Exception:
+            pass
+        return ids
+
     def register_callback(self, cb: Callable[[Dict[str, Any]], None]):
         self.telemetry_callbacks.append(cb)
 
@@ -179,12 +192,13 @@ class IngestionWorker:
                 pass
 
     def trigger_flush(self):
-        """Flush staging files to HF Bucket."""
+        """Flush staging files to HF Bucket and release active lease."""
         with self._lock:
             updates = dict(self.pending_manifest_updates)
             self.pending_manifest_updates.clear()
         if updates or list(config.STAGING_DIR.glob("*.*")):
             self.bucket_sync.flush_staging(updates)
+            self.coordinator.release_batch()
 
     def _run_loop(self):
         print(f"[WORKER {config.NODE_ID}] Ingestion loop started.")
@@ -206,9 +220,14 @@ class IngestionWorker:
                 time.sleep(2)
                 continue
 
-            # 2. Atomically lease next batch from coordinator (sub-second, shared catalog)
-            batch = self.coordinator.lease_next_batch(batch_size=config.BATCH_LEASE_SIZE)
+            # 2. Atomically lease next batch from coordinator (excluding already staged files)
+            staged_ids = self.get_staged_video_ids()
+            batch = self.coordinator.lease_next_batch(batch_size=config.BATCH_LEASE_SIZE, exclude_ids=staged_ids)
             if not batch:
+                st_bytes = self.get_staging_bytes()
+                if st_bytes > 0 or self.pending_manifest_updates:
+                    print(f"[WORKER {config.NODE_ID}] No more uncompleted videos available in catalog. Auto-flushing remaining staging buffer ({st_bytes / (1024**2):.1f} MB)...")
+                    self.trigger_flush()
                 self.batch_info = "Waiting for videos / peer leases"
                 time.sleep(6)
                 continue
@@ -217,8 +236,8 @@ class IngestionWorker:
             self._process_batch_concurrent(batch)
 
         # Cleanup on exit
-        self.coordinator.release_batch()
         self.trigger_flush()
+        self.coordinator.release_batch()
         print(f"[WORKER {config.NODE_ID}] Exited cleanly.")
 
     def _process_batch_concurrent(self, batch: List[Dict[str, Any]]):
@@ -533,8 +552,10 @@ class IngestionWorker:
             print(f"[WORKER] Staging buffer reached {st_bytes / (1024**3):.2f} GB. Flushing to dataset in single commit...")
             self.trigger_flush()
         else:
-            print(f"[WORKER] Staging buffer holding {st_bytes / (1024**2):.1f} MB / {self.buffer_gb * 1024:.0f} MB target. Batch complete; continuing to next batch...")
-        self.coordinator.release_batch()
+            staged_ids = list(self.get_staged_video_ids())
+            if staged_ids:
+                self.coordinator.update_batch_lease(staged_ids)
+            print(f"[WORKER] Staging buffer holding {st_bytes / (1024**2):.1f} MB / {self.buffer_gb * 1024:.0f} MB target ({len(staged_ids)} videos staged). Batch complete; continuing to next batch...")
         self.batch_info = "Batch Completed"
         self.download_speed = "0 MB/s"
 

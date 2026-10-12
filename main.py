@@ -28,6 +28,7 @@ import config
 from coordinator import ClusterCoordinator
 from bucket_sync import BucketSync
 from worker import IngestionWorker
+import pot_service
 
 def print_banner(channel: str = "", search: str = "", limit: int = 500, batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE, buffer_gb: float = config.BUFFER_GB):
     print("\n" + "="*70)
@@ -43,6 +44,10 @@ def print_banner(channel: str = "", search: str = "", limit: int = 500, batch_si
         print(f"🔍 Search Query:    '{search}' (Limit: {limit} videos)")
     elif channel:
         print(f"📺 Target Channel:  {channel}")
+    if pot_service.is_pot_service_alive():
+        print(f"🛡️  PO Token Server: ACTIVE ({pot_service.POT_URL} - BotGuard bypassed)")
+    else:
+        print("🛡️  PO Token Server: STANDBY (Multi-client waterfall active)")
     if getattr(config, "COOKIE_FILE", None):
         print(f"🍪 YouTube Cookies: Fallback Authenticated ({config.COOKIE_FILE})")
     else:
@@ -173,6 +178,12 @@ def main():
     elif getattr(config, "COOKIE_FILE", None):
         print(f"[BOOT] 🍪 Detected fallback YouTube cookies: {config.COOKIE_FILE}")
 
+    # 0. Ensure Proof of Origin (PO) Token provider is active
+    try:
+        pot_service.ensure_pot_service()
+    except Exception as e:
+        print(f"[BOOT] Notice initializing PO Token service: {e}")
+
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
     if not hf_token:
@@ -258,6 +269,7 @@ def main():
                 pass
         worker.stop()
         coordinator.deregister_worker()
+        pot_service.stop_pot_service()
         if telegram_bot:
             telegram_bot.stop()
         sys.exit(0)
@@ -280,6 +292,7 @@ def main():
     finally:
         worker.stop()
         coordinator.deregister_worker()
+        pot_service.stop_pot_service()
         if telegram_bot:
             telegram_bot.stop()
 

@@ -507,14 +507,17 @@ class ClusterCoordinator:
         return catalog
 
     # --- DYNAMIC BATCH LEASING ENGINE ---
-    def lease_next_batch(self, batch_size: int = config.BATCH_LEASE_SIZE) -> List[Dict[str, Any]]:
+    def lease_next_batch(self, batch_size: int = config.BATCH_LEASE_SIZE, exclude_ids: Optional[set] = None) -> List[Dict[str, Any]]:
         """
         Dynamically calculates active node count, expands metadata buffer if needed,
         and atomically leases a non-overlapping batch for this node.
+        Excludes already completed videos, peer-leased videos, and locally staged videos (exclude_ids).
         """
         now = time.time()
         self.load_manifest()
         completed_ids = set(self.manifest_cache.get("completed", {}).keys())
+        if exclude_ids is None:
+            exclude_ids = set()
 
         # Determine active nodes count
         active_nodes = self.list_active_workers()
@@ -571,7 +574,7 @@ class ClusterCoordinator:
                 if t_path.exists():
                     t_path.unlink(missing_ok=True)
 
-        # 2. Iterate channels to lease uncompleted, unleased videos
+        # 2. Iterate channels to lease uncompleted, unleased, un-staged videos
         channels = self.load_channels()
         selected = []
 
@@ -581,7 +584,7 @@ class ClusterCoordinator:
             catalog = self.get_channel_catalog(ch, needed_uncompleted=needed_buffer)
             for vid in catalog:
                 v_id = vid["id"]
-                if v_id not in completed_ids and v_id not in leased_ids:
+                if v_id not in completed_ids and v_id not in leased_ids and v_id not in exclude_ids:
                     selected.append(vid)
                     leased_ids.add(v_id)
                     if len(selected) >= batch_size:
@@ -592,13 +595,14 @@ class ClusterCoordinator:
         if not selected:
             return []
 
-        # 3. Write this worker's lease to HF bucket
+        # 3. Write this worker's lease to HF bucket, preserving all active and staged video IDs
+        all_leased_ids = list(set([v["id"] for v in selected]) | set(exclude_ids))
         lease_payload = {
             "worker_id": self.node_id,
             "leased_at": now,
             "expires_at": now + (config.LEASE_TTL_MINUTES * 60),
-            "video_ids": [v["id"] for v in selected],
-            "count": len(selected)
+            "video_ids": all_leased_ids,
+            "count": len(all_leased_ids)
         }
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
             json.dump(lease_payload, tmp, indent=2)
@@ -613,6 +617,32 @@ class ClusterCoordinator:
                 tmp_path.unlink()
 
         return selected
+
+    def update_batch_lease(self, video_ids: List[str]):
+        """Update or refresh the active lease file in the bucket for currently held/staged video IDs."""
+        if not video_ids:
+            return self.release_batch()
+        now = time.time()
+        lease_payload = {
+            "worker_id": self.node_id,
+            "leased_at": now,
+            "expires_at": now + (config.LEASE_TTL_MINUTES * 60),
+            "video_ids": list(video_ids),
+            "count": len(video_ids)
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+            json.dump(lease_payload, tmp, indent=2)
+            tmp_path = Path(tmp.name)
+        try:
+            self.api.batch_bucket_files(
+                bucket_id=self.bucket_id,
+                add=[(tmp_path, f"batches/{self.node_id}_lease.json")]
+            )
+        except Exception as e:
+            print(f"[COORDINATOR] Warning updating lease: {e}")
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def release_batch(self):
         """Release current worker's batch lease file."""

@@ -121,11 +121,38 @@ def get_impersonate_target():
 
 def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
     """Return optimal yt-dlp extractor args for robust high-volume bulk downloads.
-    - Multi-tier client waterfall: ['tv_samsung', 'visionos', 'android', 'ios']
-      tv_samsung (Samsung Smart TV) & visionos (Apple Vision Pro) completely bypass bot detection and login walls on datacenter IPs.
+    - If background PO Token provider (bgutil-pot) is active on 127.0.0.1:4416:
+      Supplies authentic Proof-of-Origin (PO) tokens and visitor data, unlocking
+      'web_creator' high-fidelity direct streaming without bot blocks.
+    - Multi-tier client waterfall: ['web_creator', 'tv_samsung', 'visionos', 'android', 'ios']
+      tv_samsung & visionos bypass challenges on datacenter IPs.
       android & ios provide battle-tested audio stream fallbacks.
     - Skips broken embedded/vr players and redundant webpage calls (youtubetab:skip=webpage).
     """
+    pot_active = False
+    pot_url = "http://127.0.0.1:4416"
+    try:
+        from pot_service import is_pot_service_alive, POT_URL
+        pot_url = POT_URL
+        pot_active = is_pot_service_alive(timeout=0.3)
+    except Exception:
+        pass
+
+    if pot_active:
+        clients = ["web_creator", "tv_samsung", "visionos", "android", "ios"]
+        return {
+            "youtubepot-bgutilhttp": {
+                "base_url": [pot_url]
+            },
+            "youtube": {
+                "player_client": clients,
+                "player_skip": ["web_embedded", "android_vr"]
+            },
+            "youtubetab": {
+                "skip": ["webpage"]
+            }
+        }
+
     return {
         "youtube": {
             "player_client": ["tv_samsung", "visionos", "android", "ios"],
