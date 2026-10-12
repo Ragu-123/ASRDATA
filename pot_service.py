@@ -80,10 +80,18 @@ def download_pot_binary() -> Optional[Path]:
 def ensure_pot_plugin_installed() -> bool:
     """Ensure bgutil-ytdlp-pot-provider Python plugin is installed and registered with yt-dlp."""
     try:
-        import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
+        import yt_dlp.extractor.youtube.pot._registry as reg
+        if "BgUtilHTTP" in reg._pot_providers.value:
+            return True
+    except Exception:
+        pass
+
+    try:
         _load_yt_dlp_plugins()
-        return True
-    except ImportError:
+        import yt_dlp.extractor.youtube.pot._registry as reg
+        if "BgUtilHTTP" in reg._pot_providers.value:
+            return True
+    except Exception:
         pass
 
     print("[POT SERVICE] 📦 Installing bgutil-ytdlp-pot-provider plugin via pip...")
