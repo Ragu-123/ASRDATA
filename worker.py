@@ -335,11 +335,11 @@ class IngestionWorker:
                         err_msg = str(native_err)
                         current_opts = native_opts
 
-                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token error ---
+                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token / 403 Forbidden error ---
                 # YouTube enforces GVS PO Token binding on web/tv sessions with cookies on datacenter IPs.
                 # Stripping cookies and using mobile/clean clients bypasses this instantly!
-                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable"]):
-                    print(f"[WORKER] 🔄 {vid_id} encountered YouTube page reload / PO token challenge. Retrying cleanly with mobile player...")
+                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden"]):
+                    print(f"[WORKER] 🔄 {vid_id} encountered YouTube challenge ({err_msg[:60]}...). Retrying cleanly with mobile player...")
                     clean_opts = dict(current_opts)
                     clean_opts.pop("cookiefile", None)
                     clean_opts["extractor_args"] = {
@@ -368,7 +368,8 @@ class IngestionWorker:
                         err_msg = str(cookie_err)
 
                 # --- RECOVERY TIER 4: Mobile Client Fallback (Android/iOS) ---
-                if "android" not in str(current_opts.get("extractor_args", {})):
+                current_clients = current_opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
+                if not any(c in ["android", "ios"] for c in current_clients):
                     print(f"[WORKER] 📱 Retrying {vid_id} with mobile player client (Android/iOS)...")
                     mobile_opts = dict(current_opts)
                     mobile_opts.pop("cookiefile", None)

@@ -119,12 +119,11 @@ YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
 
 def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
     """Return optimal yt-dlp extractor args.
-    - Default: skip broken embedded/vr players and let yt-dlp use modern clients (visionos, web, etc.)
-    - Force mobile: uses android/ios clients for strict bot-bypass fallback.
-    - Never force desktop web/tv clients with session cookies on datacenter IPs to prevent
-      'The page needs to be reloaded' / GVS PO Token unplayable errors.
+    - Uses android/ios mobile player clients by default on Kaggle/cloud environments or when forced,
+      which completely bypasses GVS PO Token challenges, 'page needs to be reloaded' errors, and HTTP 403 CDN errors.
+    - Never force desktop web/tv clients with session cookies on datacenter IPs.
     """
-    if force_mobile:
+    if force_mobile or IS_KAGGLE:
         return {
             "youtube": {
                 "player_client": ["android", "ios"]
@@ -132,7 +131,7 @@ def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
         }
     return {
         "youtube": {
-            "player_skip": ["web_embedded", "android_vr"]
+            "player_client": ["android", "ios", "mweb"]
         }
     }
 
