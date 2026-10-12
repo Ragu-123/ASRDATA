@@ -118,12 +118,16 @@ YTDLP_REMOTE_COMPONENTS = ["ejs:github"]
 YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
 
 def get_impersonate_target():
-    """Return ImpersonateTarget for curl_cffi if installed, else None."""
-    try:
-        from yt_dlp.networking.impersonate import ImpersonateTarget
-        return ImpersonateTarget.from_str("chrome")
-    except Exception:
-        return None
+    """Return ImpersonateTarget for curl_cffi if explicitly enabled via USE_IMPERSONATE=1.
+    Defaults to None in multi-threaded ingestion to prevent curl_cffi thread pool contention.
+    """
+    if os.getenv("USE_IMPERSONATE", "false").lower() in ("true", "1"):
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            return ImpersonateTarget.from_str("chrome")
+        except Exception:
+            return None
+    return None
 
 def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
     """Return optimal yt-dlp extractor args for robust high-volume bulk downloads.
