@@ -476,8 +476,6 @@ class SegmentCoordinator:
                 }
             })
         }
-        if getattr(config, "COOKIE_FILE", None):
-            ydl_opts["cookiefile"] = config.COOKIE_FILE
         catalog = []
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

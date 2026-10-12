@@ -73,62 +73,15 @@ TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
 TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
-# Cookie File Detection & Live Validation
-COOKIE_FILE = None
-
-def validate_youtube_cookies(path_or_str: str) -> bool:
-    """Validate whether YouTube cookies file exists and has recognizable cookie format."""
-    p = Path(str(path_or_str).strip().strip("'\""))
-    if not p.exists() or not p.is_file() or p.stat().st_size < 10:
-        return False
-    try:
-        content = p.read_text(encoding="utf-8", errors="ignore")
-        return any(k in content for k in ("youtube.com", "google.com", "LOGIN_INFO", "SID", "VISITOR_INFO", "NETSCAPE")) or len(content.strip()) > 20
-    except Exception:
-        return True
-
 def get_ytdlp_extractor_args() -> dict:
-    """Return optimal yt-dlp extractor args based on whether cookies are active.
-    - With authenticated cookies: prioritize clients that support Netscape cookies
-      ('tv', 'mweb', 'web_safari', 'default') so YouTube receives the authenticated session.
-    - Without cookies: use mobile/tv clients ('android', 'ios', 'tv') and skip desktop web
-      to bypass datacenter IP bot detection challenges.
-    """
-    if COOKIE_FILE or os.getenv("COOKIE_FILE"):
-        return {
-            "youtube": {
-                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
-            }
-        }
+    """Return clean mobile yt-dlp extractor args (segmentation does not need cookies)."""
     return {
         "youtube": {
-            "player_client": ["android", "ios", "tv"],
-            "player_skip": ["web", "web_embedded", "android_vr"]
+            "player_client": ["android", "ios"]
         }
     }
 
 def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
-    global COOKIE_FILE, YTDLP_EXTRACTOR_ARGS, YTDLP_EXTRACTOR_ARGS_CLI
-    if not path_str:
-        return COOKIE_FILE
-    p = Path(str(path_str).strip().strip("'\""))
-    if p.exists() and p.is_file() and p.stat().st_size > 10:
-        resolved_str = str(p.resolve())
-        if "/kaggle/input" in resolved_str or not os.access(resolved_str, os.W_OK):
-            target = Path("/kaggle/working/cookies.txt" if IS_KAGGLE else WORKING_DIR / "cookies.txt")
-            try:
-                if target.resolve() != p.resolve():
-                    shutil.copy2(resolved_str, str(target))
-                    p = target
-            except Exception:
-                pass
-
-        COOKIE_FILE = str(p.resolve())
-        os.environ["COOKIE_FILE"] = COOKIE_FILE
-        YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
-        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
-        print(f"[CONFIG] 🍪 YouTube Cookies: ACTIVE ({COOKIE_FILE})")
-        return COOKIE_FILE
     return None
 
 def ensure_deno_installed() -> Optional[str]:
@@ -157,47 +110,6 @@ def ensure_deno_installed() -> Optional[str]:
 DENO_PATH = ensure_deno_installed()
 YTDLP_REMOTE_COMPONENTS = {"ejs": "github"}
 YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
-
-# Prioritize scanning /kaggle/input for the freshest cookies first
-if os.path.exists("/kaggle/input"):
-    try:
-        for _f in sorted(Path("/kaggle/input").rglob("*cookie*.txt"), key=lambda x: x.stat().st_mtime, reverse=True):
-            if _f.is_file() and _f.stat().st_size > 10:
-                set_cookie_file(str(_f))
-                break
-    except Exception:
-        pass
-
-if not COOKIE_FILE:
-    _cookie_candidates = [
-        os.getenv("COOKIE_FILE", ""),
-        os.getenv("COOKIES_FILE", ""),
-        "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies (1).txt",
-        "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies.txt",
-        str(WORKING_DIR / "cookies.txt"),
-        str(ROOT_DIR / "cookies.txt")
-    ]
-    for _cp in _cookie_candidates:
-        if _cp and set_cookie_file(_cp):
-            break
-
-if not COOKIE_FILE:
-    _env_cookies = os.getenv("YOUTUBE_COOKIES", os.getenv("COOKIES", ""))
-    if _env_cookies.strip():
-        try:
-            _target = WORKING_DIR / "cookies.txt"
-            _target.write_text(_env_cookies.strip(), encoding="utf-8")
-            set_cookie_file(str(_target))
-        except Exception:
-            pass
-
-# yt-dlp Bot Detection Bypass Extractor Args
-YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
-YTDLP_EXTRACTOR_ARGS_CLI = (
-    '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
-    if COOKIE_FILE else
-    '--extractor-args "youtube:player_client=android,ios,tv;player_skip=web,web_embedded,android_vr"'
-)
 
 # Default Seed Channels if catalog is empty
 DEFAULT_CHANNELS = [

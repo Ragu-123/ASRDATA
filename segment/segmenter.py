@@ -89,18 +89,17 @@ class AudioSegmenter:
         # 2. Download directly from YouTube
         print(f"[SEGMENTER] Downloading audio from YouTube: {video_id}...")
         ydl_opts = {
-            'format': '18/ba[ext=m4a]/ba[ext=opus]/ba/b',
+            'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
             'outtmpl': str(dest_dir / f"{video_id}.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
             'retries': 4,
-            'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {
+            'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'tv'],
-                    'player_skip': ['web', 'web_embedded', 'android_vr']
+                    'player_client': ['android', 'ios']
                 }
-            }),
+            },
             'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', {'ejs': 'github'}),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -135,8 +134,8 @@ class AudioSegmenter:
                         err_msg = str(native_err)
                         current_opts = native_opts
 
-                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable"]):
-                    print(f"[SEGMENTER] 🔄 {video_id} reload / PO token challenge. Retrying cleanly with mobile player...")
+                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden"]):
+                    print(f"[SEGMENTER] 🔄 {video_id} challenge encountered. Retrying cleanly with mobile player...")
                     clean_opts = dict(current_opts)
                     clean_opts.pop("cookiefile", None)
                     clean_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
@@ -145,30 +144,6 @@ class AudioSegmenter:
                             return ydl_clean.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
                     except Exception as clean_err:
                         err_msg = str(clean_err)
-
-                is_login_required = any(kw in err_msg.lower() for kw in ["sign in", "confirm your age", "private video", "login_required"])
-                if is_login_required and getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
-                    print(f"[SEGMENTER] 🔑 Retrying {video_id} with authenticated YouTube cookies...")
-                    cookie_opts = dict(current_opts)
-                    cookie_opts["cookiefile"] = config.COOKIE_FILE
-                    cookie_opts.pop("external_downloader", None)
-                    cookie_opts.pop("external_downloader_args", None)
-                    try:
-                        with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
-                            return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-                    except Exception:
-                        pass
-
-                if "android" not in str(current_opts.get("extractor_args", {})):
-                    print(f"[SEGMENTER] 📱 Retrying {video_id} with mobile player client (Android/iOS)...")
-                    mobile_opts = dict(current_opts)
-                    mobile_opts.pop("cookiefile", None)
-                    mobile_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
-                    try:
-                        with yt_dlp.YoutubeDL(mobile_opts) as ydl_mob:
-                            return ydl_mob.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-                    except Exception as mob_err:
-                        err_msg = str(mob_err)
 
                 raise RuntimeError(err_msg)
 
