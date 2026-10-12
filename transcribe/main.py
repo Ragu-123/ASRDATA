@@ -348,9 +348,12 @@ def main():
     parser.add_argument("--buffer-gb", "--buffer_gb", "--shard-gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Target Parquet shard size in GB (default: {config.BUFFER_GB} GB)")
     parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
     parser.add_argument("--cookies", "--cookie", "--cookie-file", dest="cookies", nargs="*", default=[], help="Path to YouTube cookies.txt file")
+    config.add_secret_cli_args(parser)
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
     args, unknown = parser.parse_known_args()
+    config.apply_cli_secrets(args)
+    config.sync_runtime_secrets()
 
     # Process cookies if provided
     if args.cookies:

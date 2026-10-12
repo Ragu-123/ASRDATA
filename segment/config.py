@@ -10,23 +10,24 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from secret_resolver import resolve_secret
+from secret_resolver import (
+    resolve_secret,
+    add_secret_cli_args,
+    apply_cli_secrets,
+    set_secret,
+    HARDCODED_SECRETS
+)
 
-# Robust secret retrieval: check env, then Kaggle secrets with exact pattern, then .env
-try:
-    from kaggle_secrets import UserSecretsClient
-    user_secrets = UserSecretsClient()
-    secret_value_0 = user_secrets.get_secret("HF_TOKEN")
-    secret_value_1 = user_secrets.get_secret("TELEGRAM_ADMIN_ID")
-    secret_value_2 = user_secrets.get_secret("TELEGRAM_BOT_TOKEN")
-    if secret_value_0 and not os.getenv("HF_TOKEN"):
-        os.environ["HF_TOKEN"] = str(secret_value_0).strip()
-    if secret_value_1 and not os.getenv("TELEGRAM_ADMIN_ID"):
-        os.environ["TELEGRAM_ADMIN_ID"] = str(secret_value_1).strip()
-    if secret_value_2 and not os.getenv("TELEGRAM_BOT_TOKEN"):
-        os.environ["TELEGRAM_BOT_TOKEN"] = str(secret_value_2).strip()
-except Exception:
-    pass
+# Telegram Bot Settings
+def sync_runtime_secrets():
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID, TELEGRAM_ADMIN_PASSCODE
+    TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
+    TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", "5959376217")
+    TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", "")
+    return TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
+
+TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID = sync_runtime_secrets()
+TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", "")
 
 # Runtime environment (Kaggle vs Local)
 IS_KAGGLE = os.path.exists("/kaggle/working")

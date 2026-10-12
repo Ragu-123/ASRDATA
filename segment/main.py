@@ -224,9 +224,12 @@ def main():
     parser.add_argument("--shard-threshold", "--threshold", dest="shard_threshold", type=int, default=config.SHARD_CLIP_THRESHOLD, help=f"Max clips per Parquet shard fallback (default: {config.SHARD_CLIP_THRESHOLD})")
     parser.add_argument("--buffer-gb", "--buffer_gb", "--shard-gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Target Parquet shard size in GB (default: {config.BUFFER_GB} GB)")
     parser.add_argument("--once", action="store_true", help="Process a single batch and exit")
+    config.add_secret_cli_args(parser)
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
     args, unknown = parser.parse_known_args()
+    config.apply_cli_secrets(args)
+    config.sync_runtime_secrets()
 
     leftovers = list(args.extra_args) + list(unknown)
     if leftovers:

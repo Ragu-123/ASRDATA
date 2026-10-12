@@ -60,6 +60,46 @@ class TestBotAndYtdlpResilience(unittest.TestCase):
             if temp_env.exists():
                 temp_env.unlink()
 
+    def test_secret_resolver_tokens_list_format(self):
+        """Verify resolve_secret parses tokens list = [...] formatted files."""
+        temp_tokens = Path.cwd() / "tokens.txt"
+        try:
+            tokens_content = """
+tokens list = [
+HF_TOKEN=hf_custom_sample_token_xyz
+TELEGRAM_ADMIN_ID=1122334455
+TELEGRAM_BOT_TOKEN=9988776655:AAHcustom_bot_token_abc
+]
+"""
+            temp_tokens.write_text(tokens_content, encoding="utf-8")
+            os.environ.pop("HF_TOKEN", None)
+            os.environ.pop("TELEGRAM_ADMIN_ID", None)
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+            hf = resolve_secret("HF_TOKEN")
+            admin = resolve_secret("TELEGRAM_ADMIN_ID")
+            bot_tok = resolve_secret("TELEGRAM_BOT_TOKEN")
+
+            self.assertEqual(hf, "hf_custom_sample_token_xyz")
+            self.assertEqual(admin, "1122334455")
+            self.assertEqual(bot_tok, "9988776655:AAHcustom_bot_token_abc")
+        finally:
+            if temp_tokens.exists():
+                temp_tokens.unlink()
+
+    def test_secret_resolver_cli_args(self):
+        """Verify apply_cli_secrets and add_secret_cli_args update runtime secrets."""
+        import argparse
+        from secret_resolver import add_secret_cli_args, apply_cli_secrets
+
+        parser = argparse.ArgumentParser()
+        add_secret_cli_args(parser)
+        args = parser.parse_args(["--hf-token", "hf_cli_override_123", "--admin-id", "999888"])
+        apply_cli_secrets(args)
+
+        self.assertEqual(resolve_secret("HF_TOKEN"), "hf_cli_override_123")
+        self.assertEqual(resolve_secret("TELEGRAM_ADMIN_ID"), "999888")
+
     # 2. TELEGRAM BOT SEND_MESSAGE AND FALLBACKS
     def test_telegram_bot_send_message_target_chat_id_fallback(self):
         """Verify send_message sends to explicit chat_id or falls back to admin_chat_id or admin_user_id."""

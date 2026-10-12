@@ -127,7 +127,12 @@ def main():
     parser.add_argument("--video-id", "-v", dest="video_id", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("extra_args", nargs="*", default=[], help=argparse.SUPPRESS)
 
+    # Secret & Token CLI flags
+    config.add_secret_cli_args(parser)
+
     args, unknown = parser.parse_known_args()
+    config.apply_cli_secrets(args)
+    config.sync_runtime_secrets()
 
     if args.aria2c:
         config.USE_ARIA2C = True
