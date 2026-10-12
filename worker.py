@@ -297,6 +297,7 @@ class IngestionWorker:
                 'fragment_retries': 5,
                 'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {}),
                 'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', ['ejs:github']),
+                'js_runtimes': config.get_ytdlp_js_runtimes() if hasattr(config, "get_ytdlp_js_runtimes") else {},
                 'sleep_interval_requests': 0.5,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
@@ -361,18 +362,37 @@ class IngestionWorker:
                         err_msg = str(native_err)
                         current_opts = native_opts
 
-                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token / 403 Forbidden / Bot Challenge ---
-                # Rotate cleanly to Smart TV (tv_samsung) and Apple Vision (visionos) clients without cookies
-                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden", "sign in to confirm"]):
-                    print(f"[WORKER] 🔄 {vid_id} challenge detected ({err_msg[:60]}...). Retrying with Smart TV / VisionOS clients...")
+                # --- RECOVERY TIER 2A: Age-Restricted (18+) / Sign-in Gate ---
+                is_age_gate = any(kw in err_msg.lower() for kw in ["confirm your age", "age-restricted", "login_required", "sign in to confirm your age"])
+                if is_age_gate:
+                    if getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
+                        print(f"[WORKER] 🔑 {vid_id} requires 18+ age confirmation. Retrying with authenticated YouTube cookies...")
+                        cookie_opts = dict(current_opts)
+                        cookie_opts["cookiefile"] = config.COOKIE_FILE
+                        cookie_opts.pop("external_downloader", None)
+                        cookie_opts.pop("external_downloader_args", None)
+                        try:
+                            with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
+                                return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                        except Exception as cookie_err:
+                            err_msg = str(cookie_err)
+                    else:
+                        print(f"[WORKER] 🔞 Skipped {vid_id}: 18+ Age-Restricted (Requires authenticated YouTube cookies with 18+ birthdate).")
+                        return None
+
+                # --- RECOVERY TIER 2B: 'The page needs to be reloaded' / GVS PO Token / 403 Forbidden / Bot Challenge ---
+                # Rotate cleanly to Smart TV (tv_samsung), VisionOS (visionos), Android & iOS clients
+                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable", "403", "forbidden", "not a bot", "bot detection"]):
+                    print(f"[WORKER] 🔄 {vid_id} stream challenge detected ({err_msg[:60]}...). Retrying with Smart TV / VisionOS / Mobile clients...")
                     clean_opts = dict(current_opts)
                     clean_opts.pop("cookiefile", None)
-                    clean_opts["extractor_args"] = {
-                        "youtube": {
-                            "player_client": ["tv_samsung", "visionos", "android", "ios"],
-                            "player_skip": ["web_embedded", "android_vr"]
-                        }
+                    # Preserve youtubepot-bgutilhttp if configured while rotating clients
+                    ex_args = dict(current_opts.get("extractor_args", {}))
+                    ex_args["youtube"] = {
+                        "player_client": ["tv_samsung", "visionos", "android", "ios"],
+                        "player_skip": ["web_embedded", "android_vr"]
                     }
+                    clean_opts["extractor_args"] = ex_args
                     time.sleep(random.uniform(1.0, 2.0))
                     try:
                         with yt_dlp.YoutubeDL(clean_opts) as ydl_clean:
@@ -380,31 +400,17 @@ class IngestionWorker:
                     except Exception as clean_err:
                         err_msg = str(clean_err)
 
-                # --- RECOVERY TIER 3: Sign-in / Age-restricted video -> Try cookies ---
-                is_login_required = any(kw in err_msg.lower() for kw in ["sign in", "confirm your age", "private video", "login_required"])
-                if is_login_required and getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
-                    print(f"[WORKER] 🔑 {vid_id} requires age/login confirmation. Retrying with authenticated YouTube cookies...")
-                    cookie_opts = dict(current_opts)
-                    cookie_opts["cookiefile"] = config.COOKIE_FILE
-                    cookie_opts.pop("external_downloader", None)
-                    cookie_opts.pop("external_downloader_args", None)
-                    try:
-                        with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
-                            return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
-                    except Exception as cookie_err:
-                        err_msg = str(cookie_err)
-
-                # --- RECOVERY TIER 4: Mobile Client Fallback (Android/iOS) ---
+                # --- RECOVERY TIER 3: Mobile Client Direct Fallback (Android/iOS) ---
                 current_clients = current_opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
                 if not any(c in ["android", "ios"] for c in current_clients):
                     print(f"[WORKER] 📱 Retrying {vid_id} with mobile player client (Android/iOS)...")
                     mobile_opts = dict(current_opts)
                     mobile_opts.pop("cookiefile", None)
-                    mobile_opts["extractor_args"] = {
-                        "youtube": {
-                            "player_client": ["android", "ios"]
-                        }
+                    ex_args = dict(current_opts.get("extractor_args", {}))
+                    ex_args["youtube"] = {
+                        "player_client": ["android", "ios"]
                     }
+                    mobile_opts["extractor_args"] = ex_args
                     try:
                         with yt_dlp.YoutubeDL(mobile_opts) as ydl_mob:
                             return ydl_mob.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)

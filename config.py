@@ -123,10 +123,11 @@ def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
     """Return optimal yt-dlp extractor args for robust high-volume bulk downloads.
     - If background PO Token provider (bgutil-pot) is active on 127.0.0.1:4416:
       Supplies authentic Proof-of-Origin (PO) tokens and visitor data, unlocking
-      'web_creator' high-fidelity direct streaming without bot blocks.
-    - Multi-tier client waterfall: ['web_creator', 'tv_samsung', 'visionos', 'android', 'ios']
-      tv_samsung & visionos bypass challenges on datacenter IPs.
-      android & ios provide battle-tested audio stream fallbacks.
+      'web' & 'web_creator' high-fidelity direct streaming without bot blocks.
+    - Multi-tier client waterfall:
+      With cookies: ['web_creator', 'web', 'tv_samsung', 'visionos', 'android', 'ios']
+      Clean guest mode: ['web', 'tv_samsung', 'visionos', 'android', 'ios']
+    - fetch_pot: ['always'] forces proactive PO token generation to eliminate 403 & bot challenges.
     - Skips broken embedded/vr players and redundant webpage calls (youtubetab:skip=webpage).
     """
     pot_active = False
@@ -138,15 +139,18 @@ def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
     except Exception:
         pass
 
+    has_valid_cookies = bool(COOKIE_FILE and Path(COOKIE_FILE).exists() and Path(COOKIE_FILE).stat().st_size > 10)
+
     if pot_active:
-        clients = ["web_creator", "tv_samsung", "visionos", "android", "ios"]
+        clients = ["web", "web_creator", "tv_samsung", "visionos", "android", "ios"]
         return {
             "youtubepot-bgutilhttp": {
                 "base_url": [pot_url]
             },
             "youtube": {
                 "player_client": clients,
-                "player_skip": ["web_embedded", "android_vr"]
+                "player_skip": ["web_embedded", "android_vr"],
+                "fetch_pot": ["always"]
             },
             "youtubetab": {
                 "skip": ["webpage"]
@@ -163,17 +167,55 @@ def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
         }
     }
 
+def get_ytdlp_js_runtimes() -> dict:
+    """Return available JavaScript runtimes for yt-dlp (Node.js or Deno)."""
+    if shutil.which("node"):
+        return {"node": {}}
+    if shutil.which("deno"):
+        return {"deno": {}}
+    return {}
+
 def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
     """Set global COOKIE_FILE and environment variable if file exists.
     If the file is in a read-only filesystem (e.g. /kaggle/input), automatically
     copies it to a writable location (/kaggle/working/cookies.txt) so yt-dlp's
     cookiejar does not crash with OSError: [Errno 30] Read-only file system.
-    Never discards user-provided cookies.
     """
     global COOKIE_FILE, YTDLP_EXTRACTOR_ARGS, YTDLP_EXTRACTOR_ARGS_CLI
     if not path_str:
         return COOKIE_FILE
     p = Path(str(path_str).strip().strip("'\""))
+
+    # If explicit path doesn't exist, search /kaggle/input and working directory
+    if not (p.exists() and p.is_file()):
+        candidate = None
+        search_roots = [Path("/kaggle/input"), Path("/kaggle/working")] if IS_KAGGLE else [Path("/kaggle/input"), Path(".")]
+        for root in search_roots:
+            if root.exists():
+                # 1. Try finding by matching filename
+                try:
+                    for found in root.rglob(p.name):
+                        if found.is_file() and found.stat().st_size > 10 and not any(ign in str(found).lower() for ign in ["testdata", "yt-dlp", ".git"]):
+                            candidate = found
+                            break
+                except Exception:
+                    pass
+                if candidate:
+                    break
+                # 2. Try finding any *cookie*.txt
+                try:
+                    for found in root.rglob("*cookie*.txt"):
+                        if found.is_file() and found.stat().st_size > 10 and not any(ign in str(found).lower() for ign in ["testdata", "yt-dlp", ".git"]):
+                            candidate = found
+                            break
+                except Exception:
+                    pass
+                if candidate:
+                    break
+        if candidate:
+            print(f"[CONFIG] 🔍 Auto-discovered cookie file at: {candidate}")
+            p = candidate
+
     if p.exists() and p.is_file() and p.stat().st_size > 10:
         resolved_str = str(p.resolve())
         # /kaggle/input is read-only. Copy to writable /kaggle/working/cookies.txt
@@ -212,6 +254,8 @@ if not COOKIE_FILE:
     _candidate_cookie_paths = [
         os.getenv("COOKIE_FILE", ""),
         os.getenv("COOKIES_FILE", ""),
+        "/kaggle/input/cookies/cookies (1).txt",
+        "/kaggle/input/cookies/cookies.txt",
         "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies (1).txt",
         "/kaggle/input/datasets/dhanalakshmikavitha/cookies/cookies.txt",
         str(WORKING_DIR / "cookies.txt"),

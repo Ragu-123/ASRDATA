@@ -78,9 +78,10 @@ def download_pot_binary() -> Optional[Path]:
         return None
 
 def ensure_pot_plugin_installed() -> bool:
-    """Ensure bgutil-ytdlp-pot-provider Python plugin is installed in current Python environment."""
+    """Ensure bgutil-ytdlp-pot-provider Python plugin is installed and registered with yt-dlp."""
     try:
-        import bgutil_ytdlp_pot_provider  # noqa: F401
+        import yt_dlp_plugins.extractor.getpot_bgutil_http  # noqa: F401
+        _load_yt_dlp_plugins()
         return True
     except ImportError:
         pass
@@ -93,23 +94,50 @@ def ensure_pot_plugin_installed() -> bool:
             text=True,
             timeout=60
         )
-        return res.returncode == 0
+        if res.returncode == 0:
+            import importlib
+            importlib.invalidate_caches()
+            _load_yt_dlp_plugins()
+            return True
+        return False
     except Exception as e:
         print(f"[POT SERVICE] Notice installing plugin: {e}")
         return False
 
+def _load_yt_dlp_plugins():
+    """Dynamically register yt-dlp plugin extractors if yt_dlp is already in memory."""
+    try:
+        import yt_dlp.plugins
+        yt_dlp.plugins.load_all_plugins()
+    except Exception:
+        pass
+
+def verify_pot_provider() -> Optional[str]:
+    """Verify bgutil-pot server and return its reported version."""
+    try:
+        req = urllib.request.Request(f"{POT_URL}/ping", headers={"User-Agent": "ASR-Worker"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            import json
+            data = json.loads(resp.read().decode())
+            return data.get("version", "active")
+    except Exception:
+        return None
+
 def start_pot_server(pot_binary: Path) -> bool:
-    """Launch bgutil-pot server daemon in background."""
+    """Launch bgutil-pot server daemon in background with verbose logging."""
     global _pot_process
     print(f"[POT SERVICE] 🚀 Spawning PO Token daemon: {pot_binary} server (Port {POT_PORT})...")
     log_file = Path("/tmp/bgutil_pot_server.log") if Path("/tmp").exists() else Path("bgutil_pot_server.log")
     
     try:
         f = open(log_file, "a", encoding="utf-8")
+        env = os.environ.copy()
+        env["RUST_LOG"] = "info"
         _pot_process = subprocess.Popen(
-            [str(pot_binary), "server"],
+            [str(pot_binary), "server", "--verbose"],
             stdout=f,
             stderr=f,
+            env=env,
             start_new_session=True
         )
         
@@ -117,7 +145,8 @@ def start_pot_server(pot_binary: Path) -> bool:
         for _ in range(10):
             time.sleep(0.5)
             if is_pot_service_alive(timeout=0.5):
-                print(f"[POT SERVICE] ✅ Background PO Token daemon is ACTIVE and listening on {POT_URL}!")
+                version = verify_pot_provider() or "v1.x"
+                print(f"[POT SERVICE] ✅ Background PO Token daemon is ACTIVE and listening on {POT_URL}! (Version: {version})")
                 return True
         return is_pot_service_alive()
     except Exception as e:
@@ -132,7 +161,8 @@ def ensure_pot_service() -> bool:
     - Returns True if service is running, False otherwise.
     """
     if is_pot_service_alive():
-        print(f"[POT SERVICE] ✅ PO Token daemon is already running on {POT_URL}.")
+        version = verify_pot_provider() or "active"
+        print(f"[POT SERVICE] ✅ PO Token daemon is already running on {POT_URL} (Version: {version}).")
         ensure_pot_plugin_installed()
         return True
 
