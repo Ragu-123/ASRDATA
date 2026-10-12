@@ -179,24 +179,22 @@ class ClusterCoordinator:
             if tmp_path.exists():
                 tmp_path.unlink()
 
-    def add_channel(self, url_or_handle: str, name: Optional[str] = None) -> bool:
-        """Add a new YouTube channel to the persistent queue."""
+    def add_channel(self, url_or_handle: str, name: Optional[str] = None, limit: int = 500) -> bool:
+        """Add a new YouTube channel, playlist, or search query to the persistent queue."""
         channels = self.load_channels()
-        norm_url = url_or_handle.strip()
-        if not norm_url.startswith("http"):
-            if norm_url.startswith("@"):
-                norm_url = f"https://www.youtube.com/{norm_url}/videos"
-            else:
-                norm_url = f"https://www.youtube.com/@{norm_url}/videos"
+        ch_id, norm_url, ch_name = self.parse_channel_info(url_or_handle, name, limit=limit)
         
+        # Prioritize target: if already in queue, move to front
         for ch in channels:
-            if ch.get("url") == norm_url:
-                return False
+            if ch.get("url") == norm_url or ch.get("id") == ch_id:
+                channels.remove(ch)
+                channels.insert(0, ch)
+                self.save_channels(channels)
+                return True
                 
-        ch_id = norm_url.split("/")[-2].replace("@", "") if "@" in norm_url else f"ch_{int(time.time())}"
-        channels.append({
+        channels.insert(0, {
             "id": ch_id,
-            "name": name or ch_id,
+            "name": ch_name,
             "url": norm_url,
             "active": True,
             "added_at": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -205,11 +203,46 @@ class ClusterCoordinator:
         return True
 
     @staticmethod
-    def parse_channel_info(url_or_handle: str, name: Optional[str] = None) -> tuple:
+    def parse_channel_info(url_or_handle: str, name: Optional[str] = None, limit: int = 500) -> tuple:
         """
-        Parses (channel_id, normalized_url, channel_name) reliably from any URL or handle.
+        Parses (target_id, normalized_url, target_name) reliably from:
+        - YouTube search query: "search:tamil speech", "tamil speech", "ytsearch500:tamil speech"
+        - Playlist: "https://www.youtube.com/playlist?list=PLxxx"
+        - Direct video: "https://www.youtube.com/watch?v=xxx" or "https://youtu.be/xxx"
+        - Channel URL or handle: "@madangowri", "https://www.youtube.com/@madangowri/videos"
         """
         raw = url_or_handle.strip().rstrip("/")
+
+        # 1. YouTube Search Query
+        if raw.startswith("ytsearch") or raw.startswith("search:") or (not raw.startswith("http") and not raw.startswith("@") and (" " in raw or raw.startswith("search_"))):
+            query = raw.replace("search:", "").strip()
+            if not query.startswith("ytsearch"):
+                norm_url = f"ytsearch{limit}:{query}"
+            else:
+                norm_url = query
+                query = query.split(":", 1)[1] if ":" in query else query
+            slug = re.sub(r'[^a-zA-Z0-9_]+', '_', query).strip('_').lower()[:32]
+            target_id = f"search_{slug}" if not slug.startswith("search_") else slug
+            target_name = name or f"Search: {query}"
+            return target_id, norm_url, target_name
+
+        # 2. YouTube Playlist
+        if "playlist?list=" in raw or "/playlist/" in raw:
+            m = re.search(r"list=([a-zA-Z0-9_\-]+)", raw)
+            list_id = m.group(1) if m else f"list_{int(time.time())}"
+            target_id = f"playlist_{list_id}"
+            target_name = name or f"Playlist: {list_id}"
+            return target_id, raw, target_name
+
+        # 3. Direct Video
+        if "watch?v=" in raw or "youtu.be/" in raw:
+            m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", raw)
+            vid_id = m.group(1) if m else f"vid_{int(time.time())}"
+            target_id = f"video_{vid_id}"
+            target_name = name or f"Video: {vid_id}"
+            return target_id, raw, target_name
+
+        # 4. Channel URL or Handle
         if not raw.startswith("http"):
             handle = raw.lstrip("@")
             ch_id = handle
@@ -406,26 +439,27 @@ class ClusterCoordinator:
 
         # 3. If uncompleted count is lower than needed, expand metadata
         if len(uncompleted) < needed_uncompleted and ch_id not in self.exhausted_channels and len(catalog) < 4500:
-            start_idx = len(catalog) + 1
-            chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 3)
-            end_idx = min(4500, len(catalog) + chunk_size)
-            print(f"[COORDINATOR] Expanding catalog for {channel.get('name', ch_id)}: fetching items {start_idx} to {end_idx}...")
+            is_search = str(ch_url).startswith("ytsearch")
+            if is_search:
+                print(f"[COORDINATOR] Searching YouTube for {channel.get('name', ch_id)} ({ch_url})...")
+            else:
+                start_idx = len(catalog) + 1
+                chunk_size = max(config.CATALOG_FETCH_CHUNK, needed_uncompleted * 3)
+                end_idx = min(4500, len(catalog) + chunk_size)
+                print(f"[COORDINATOR] Expanding catalog for {channel.get('name', ch_id)}: fetching items {start_idx} to {end_idx}...")
 
             try:
                 ydl_opts = {
                     'extract_flat': True,
                     'quiet': True,
                     'no_warnings': True,
-                    'playliststart': start_idx,
-                    'extractor_args': getattr(config, "YTDLP_EXTRACTOR_ARGS", {
-                        'youtube': {
-                            'player_client': ['android', 'ios'],
-                            'player_skip': ['web', 'tv', 'web_embedded', 'android_vr']
-                        }
-                    })
+                    'socket_timeout': 30,
+                    'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {}),
                 }
-                if getattr(config, "COOKIE_FILE", None):
-                    ydl_opts["cookiefile"] = config.COOKIE_FILE
+                if not is_search:
+                    ydl_opts['playliststart'] = start_idx
+                    ydl_opts['playlistend'] = end_idx
+
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(ch_url, download=False)
                     entries = info.get("entries", []) if info else []
@@ -433,6 +467,8 @@ class ClusterCoordinator:
                 existing_ids = {v["id"] for v in catalog}
                 added_count = 0
                 for e in entries:
+                    if not e:
+                        continue
                     v_id = e.get("id")
                     if v_id and v_id not in existing_ids:
                         catalog.append({
@@ -808,28 +844,7 @@ class ClusterCoordinator:
                     t_path.unlink()
         return None
 
-    @staticmethod
-    def parse_channel_info(url_or_handle: str, name: Optional[str] = None) -> tuple:
-        """Parses (channel_id, normalized_url, channel_name) reliably from any URL or handle."""
-        raw = url_or_handle.strip().rstrip("/")
-        if not raw.startswith("http"):
-            handle = raw.lstrip("@")
-            ch_id = handle
-            norm_url = f"https://www.youtube.com/@{handle}/videos"
-        else:
-            m = re.search(r"@([a-zA-Z0-9_\-\.]+)", raw)
-            if m:
-                ch_id = m.group(1)
-                norm_url = f"https://www.youtube.com/@{ch_id}/videos"
-            else:
-                parts = raw.split("/")
-                last_part = parts[-1]
-                if last_part.lower() == "videos" and len(parts) > 1:
-                    last_part = parts[-2]
-                ch_id = last_part.replace("@", "") if last_part != "www.youtube.com" else f"ch_{int(time.time())}"
-                norm_url = raw if raw.endswith("/videos") else f"{raw}/videos"
-        ch_name = name or ch_id
-        return ch_id, norm_url, ch_name
+
 
     def scrape_channel_catalog(self, url_or_handle: str, name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Upfront channel catalog scraping: extracts all videos once and saves to catalogs/{channel_id}.json."""

@@ -116,15 +116,22 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                     err_msg = str(native_err)
                     current_opts = native_opts
 
-            if getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
-                print(f"[INGEST] ⚠️ Retrying {video_id} with authenticated YouTube cookies...")
+            if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable"]):
+                print(f"[INGEST] 🔄 {video_id} reload / PO token challenge. Retrying cleanly with mobile player...")
+                clean_opts = dict(current_opts)
+                clean_opts.pop("cookiefile", None)
+                clean_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
+                try:
+                    with yt_dlp.YoutubeDL(clean_opts) as ydl_clean:
+                        return ydl_clean.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                except Exception as clean_err:
+                    err_msg = str(clean_err)
+
+            is_login_required = any(kw in err_msg.lower() for kw in ["sign in", "confirm your age", "private video", "login_required"])
+            if is_login_required and getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
+                print(f"[INGEST] 🔑 Retrying {video_id} with authenticated YouTube cookies...")
                 cookie_opts = dict(current_opts)
                 cookie_opts["cookiefile"] = config.COOKIE_FILE
-                cookie_opts["extractor_args"] = {
-                    "youtube": {
-                        "player_client": ["tv", "mweb", "web_safari", "default", "android"]
-                    }
-                }
                 cookie_opts.pop("external_downloader", None)
                 cookie_opts.pop("external_downloader_args", None)
                 try:
@@ -133,7 +140,18 @@ def download_audio(video_id: str, dest_dir: Path, filename: Optional[str] = None
                 except Exception:
                     pass
 
-            raise native_err if 'native_err' in locals() else dl_err
+            if "android" not in str(current_opts.get("extractor_args", {})):
+                print(f"[INGEST] 📱 Retrying {video_id} with mobile player client (Android/iOS)...")
+                mobile_opts = dict(current_opts)
+                mobile_opts.pop("cookiefile", None)
+                mobile_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios"]}}
+                try:
+                    with yt_dlp.YoutubeDL(mobile_opts) as ydl_mob:
+                        return ydl_mob.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                except Exception as mob_err:
+                    err_msg = str(mob_err)
+
+            raise RuntimeError(err_msg)
 
     try:
         _extract_with_fallback(opts)

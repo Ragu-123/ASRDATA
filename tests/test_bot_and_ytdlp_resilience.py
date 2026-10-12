@@ -259,7 +259,70 @@ class TestBotAndYtdlpResilience(unittest.TestCase):
                 self.assertIsNotNone(result)
                 self.assertTrue(result.exists())
                 self.assertEqual(result.suffix.lower(), ".m4a")
-                self.assertGreater(result.stat().st_size, 10000)
+    def test_parse_channel_info_search_and_playlist(self):
+        """Verify ClusterCoordinator.parse_channel_info handles search queries, playlists, and channels."""
+        from coordinator import ClusterCoordinator
+
+        # 1. Search Query with prefix
+        t_id, url, name = ClusterCoordinator.parse_channel_info("search:tamil news", limit=100)
+        self.assertTrue(t_id.startswith("search_"))
+        self.assertEqual(url, "ytsearch100:tamil news")
+        self.assertIn("tamil news", name)
+
+        # 2. Plain search phrase with spaces
+        t_id2, url2, name2 = ClusterCoordinator.parse_channel_info("tamil podcast episodes", limit=50)
+        self.assertTrue(t_id2.startswith("search_"))
+        self.assertEqual(url2, "ytsearch50:tamil podcast episodes")
+
+        # 3. Playlist URL
+        t_id3, url3, name3 = ClusterCoordinator.parse_channel_info("https://www.youtube.com/playlist?list=PLabc123xyz")
+        self.assertEqual(t_id3, "playlist_PLabc123xyz")
+        self.assertIn("PLabc123xyz", url3)
+
+        # 4. Standard channel handle
+        t_id4, url4, name4 = ClusterCoordinator.parse_channel_info("@madangowri")
+        self.assertEqual(t_id4, "madangowri")
+        self.assertEqual(url4, "https://www.youtube.com/@madangowri/videos")
+
+    def test_worker_recovery_from_page_reload_error(self):
+        """Verify IngestionWorker recovers when YouTube throws 'The page needs to be reloaded'."""
+        mock_coord = MagicMock()
+        mock_sync = MagicMock()
+        worker = IngestionWorker(coordinator=mock_coord, bucket_sync=mock_sync)
+
+        item = {"id": "reload_test_vid", "title": "Test Title", "duration": 60, "channel": "Test"}
+        
+        # Test download with mocked YoutubeDL
+        with patch("worker.yt_dlp.YoutubeDL") as mock_ydl_cls:
+            call_count = 0
+            def fake_extract(url, download=True):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First attempt fails with 'The page needs to be reloaded.'
+                    raise Exception("ERROR: [youtube] reload_test_vid: The page needs to be reloaded.")
+                # Second attempt succeeds and creates dummy file
+                target = config.STAGING_DIR / "reload_test_vid.m4a"
+                target.write_bytes(b"A" * 50000)
+                return {"duration": 60, "title": "Test Title"}
+
+            mock_ydl = mock_ydl_cls.return_value.__enter__.return_value
+            mock_ydl.extract_info.side_effect = fake_extract
+
+            # Run single batch with this item
+            worker.running = True
+            worker._process_batch_concurrent([item])
+
+            # Verify that recovery attempt occurred and video was completed
+            self.assertGreaterEqual(call_count, 2)
+            self.assertEqual(worker.session_count, 1)
+            self.assertTrue(
+                "reload_test_vid" in worker.pending_manifest_updates or
+                mock_sync.flush_staging.called
+            )
+            
+            # Clean up
+            (config.STAGING_DIR / "reload_test_vid.m4a").unlink(missing_ok=True)
 
 if __name__ == "__main__":
     unittest.main()

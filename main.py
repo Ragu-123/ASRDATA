@@ -29,7 +29,7 @@ from coordinator import ClusterCoordinator
 from bucket_sync import BucketSync
 from worker import IngestionWorker
 
-def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE, buffer_gb: float = config.BUFFER_GB):
+def print_banner(channel: str = "", search: str = "", limit: int = 500, batch_size: int = config.BATCH_LEASE_SIZE, concurrency: int = config.CONCURRENT_DOWNLOADS_PER_NODE, buffer_gb: float = config.BUFFER_GB):
     print("\n" + "="*70)
     print("📥  TAMIL ASR STAGE 1: RAW AUDIO INGESTION ENGINE (main.py)")
     print("="*70)
@@ -38,27 +38,47 @@ def print_banner(channel: str = "", batch_size: int = config.BATCH_LEASE_SIZE, c
     print(f"💾 Staging Dir:     {config.STAGING_DIR}")
     print(f"⚡ Batch Lease:     {batch_size} videos per lease")
     print(f"📦 Buffer Flush:    {buffer_gb:.1f} GB threshold (Single commit upload)")
-    print(f"🔥 Concurrency:     {concurrency} parallel streams (aria2c 8x sockets each)")
-    if getattr(config, "COOKIE_FILE", None):
-        print(f"🍪 YouTube Cookies: ACTIVE ({config.COOKIE_FILE})")
-    else:
-        print("🍪 YouTube Cookies: Not configured (Using Android/VR player_skip guard)")
-    if channel:
+    print(f"🔥 Concurrency:     {concurrency} parallel streams (High-speed native chunking)")
+    if search:
+        print(f"🔍 Search Query:    '{search}' (Limit: {limit} videos)")
+    elif channel:
         print(f"📺 Target Channel:  {channel}")
-    print("🚀 Task:            Download raw audio (.m4a) from YouTube via yt-dlp + aria2c")
+    if getattr(config, "COOKIE_FILE", None):
+        print(f"🍪 YouTube Cookies: Fallback Authenticated ({config.COOKIE_FILE})")
+    else:
+        print("🍪 YouTube Cookies: Clean Guest Mode (Zero PO-token / reload challenges)")
+    print("🚀 Task:            Fast bulk audio download (.m4a) via yt-dlp native streamer")
     print("✂️  Segmentation:    DISABLED (Run 'python segment.py' for Stage 2)")
     print("🤖 Telegram Bot:    Interactive Menu Bar & Real-time Alerts Active")
     print("="*70 + "\n")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Tamil ASR Stage 1: Download raw YouTube audio files (main.py)"
+        description="Tamil ASR Stage 1: Download raw YouTube audio files in bulk (main.py)"
     )
     parser.add_argument(
         "--channel", "-c",
         type=str,
         default=os.getenv("CHANNEL", os.getenv("CHANNEL_URL", "")),
         help="YouTube channel URL, handle, or ID to download from (e.g. @madangowri)"
+    )
+    parser.add_argument(
+        "--search", "-s",
+        type=str,
+        default=os.getenv("SEARCH_QUERY", os.getenv("SEARCH", "")),
+        help="YouTube search query for bulk audio download (e.g. 'tamil speech' or 'tamil news')"
+    )
+    parser.add_argument(
+        "--limit", "-n",
+        type=int,
+        default=int(os.getenv("LIMIT", "500")),
+        help="Maximum search results to discover and queue (default: 500)"
+    )
+    parser.add_argument(
+        "--playlist", "-p",
+        type=str,
+        default=os.getenv("PLAYLIST_URL", ""),
+        help="YouTube playlist URL to download in bulk"
     )
     parser.add_argument(
         "--batch-size", "--batch_size",
@@ -79,7 +99,12 @@ def main():
         dest="cookies",
         nargs="*",
         default=[],
-        help="Path to YouTube cookies.txt file (e.g. /kaggle/input/.../cookies.txt)"
+        help="Path to YouTube cookies.txt file for fallback authentication"
+    )
+    parser.add_argument(
+        "--aria2c",
+        action="store_true",
+        help="Enable external aria2c downloader (default: False, native streamer is 10x faster)"
     )
     parser.add_argument(
         "--once",
@@ -94,7 +119,7 @@ def main():
         help=f"Buffer size in GB before uploading raw audios in single commit (default: {config.BUFFER_GB} GB)"
     )
     # Backward compatibility flags (no-op)
-    parser.add_argument("--stage", "-s", type=str, default="ingest", help=argparse.SUPPRESS)
+    parser.add_argument("--stage", type=str, default="ingest", help=argparse.SUPPRESS)
     parser.add_argument("--no-web", "--cli", dest="no_web", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8000, help=argparse.SUPPRESS)
     parser.add_argument("--dataset", type=str, default="", help=argparse.SUPPRESS)
@@ -104,35 +129,44 @@ def main():
 
     args, unknown = parser.parse_known_args()
 
-    # Smart fallback for positional or unrecognized arguments (e.g. unquoted paths with spaces/parentheses)
+    if args.aria2c:
+        config.USE_ARIA2C = True
+
+    # Smart fallback for positional or unrecognized arguments (e.g. unquoted queries or paths)
     leftovers = list(args.extra_args) + list(unknown)
     if leftovers:
-        # Check if any leftover is channel (@channel or http)
         for token in list(leftovers):
-            if token.startswith("@") or "youtube.com" in token or "youtu.be" in token:
+            if token.startswith("@") or ("youtube.com" in token and "list=" not in token) or "youtu.be" in token:
                 if not args.channel:
                     args.channel = token
+                leftovers.remove(token)
+            elif "list=" in token:
+                if not args.playlist:
+                    args.playlist = token
                 leftovers.remove(token)
             elif token.isdigit() and args.concurrency == config.CONCURRENT_DOWNLOADS_PER_NODE:
                 args.concurrency = int(token)
                 leftovers.remove(token)
 
-        # Remaining tokens could form a cookie file path (e.g. /kaggle/input/.../cookies (1).txt)
-        if leftovers and not args.cookies:
+        # Remaining tokens could form a search query or cookie file path
+        if leftovers:
             joined_candidate = " ".join(leftovers).strip().strip("'\"")
             if Path(joined_candidate).exists() or ".txt" in joined_candidate or "cookie" in joined_candidate.lower():
-                args.cookies = [joined_candidate]
+                if not args.cookies:
+                    args.cookies = [joined_candidate]
+            elif not args.search and not args.channel and not args.playlist:
+                args.search = joined_candidate
 
     # Process cookies flag
     if args.cookies:
         raw_cookie_str = " ".join(args.cookies) if isinstance(args.cookies, list) else str(args.cookies)
         cookie_res = config.set_cookie_file(raw_cookie_str)
         if cookie_res:
-            print(f"[BOOT] 🍪 Successfully loaded YouTube cookies from: {cookie_res}")
+            print(f"[BOOT] 🍪 Loaded YouTube cookies (Fallback Authenticated): {cookie_res}")
         else:
             print(f"[BOOT] ⚠️ Cookie file not found at: {raw_cookie_str}", file=sys.stderr)
     elif getattr(config, "COOKIE_FILE", None):
-        print(f"[BOOT] 🍪 Auto-detected YouTube cookies from: {config.COOKIE_FILE}")
+        print(f"[BOOT] 🍪 Detected fallback YouTube cookies: {config.COOKIE_FILE}")
 
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
@@ -149,22 +183,24 @@ def main():
     coordinator = ClusterCoordinator(api=api, bucket_id=config.BUCKET_ID, node_id=config.NODE_ID)
     bucket_sync = BucketSync(api=api, coordinator=coordinator)
 
-    # 3. Add or prioritize channel if given
-    channel_input = args.channel.strip()
-    if not channel_input and sys.stdin.isatty():
+    # 3. Add or prioritize search query, playlist, or channel if given
+    target_input = (args.search.strip() if args.search else "") or (args.playlist.strip() if args.playlist else "") or (args.channel.strip() if args.channel else "")
+    if not target_input and sys.stdin.isatty():
         try:
             print("\n" + "="*70)
-            print("📺 YOUTUBE CHANNEL INGESTION")
+            print("📺 YOUTUBE BULK AUDIO HARVEST")
             print("="*70)
-            val = input("👉 Enter YouTube Channel URL/handle (press Enter for default seed channels): ").strip()
+            val = input("👉 Enter YouTube Channel (@handle), Search Query, or Playlist: ").strip()
             if val:
-                channel_input = val
+                target_input = val
         except (KeyboardInterrupt, EOFError):
             pass
 
-    if channel_input:
-        print(f"[BOOT] Adding and prioritizing target channel: {channel_input}")
-        coordinator.add_channel(channel_input)
+    if target_input:
+        if args.search and not target_input.startswith("ytsearch") and not target_input.startswith("http") and not target_input.startswith("@"):
+            target_input = f"ytsearch{args.limit}:{target_input}"
+        print(f"[BOOT] Prioritizing target for bulk download: {target_input}")
+        coordinator.add_channel(target_input, limit=args.limit)
 
     # 4. Initialize Telegram Bot
     telegram_bot = None
@@ -178,12 +214,14 @@ def main():
             )
             telegram_bot.start_background_thread()
             env_str = "Kaggle" if config.IS_KAGGLE else "Local Cluster"
-            cookie_label = f"Active (`{Path(config.COOKIE_FILE).name}`)" if getattr(config, "COOKIE_FILE", None) else "None"
+            cookie_label = f"Fallback (`{Path(config.COOKIE_FILE).name}`)" if getattr(config, "COOKIE_FILE", None) else "Clean (No cookies)"
+            target_desc = f"Search: `{args.search}`" if args.search else (f"Channel: `{args.channel}`" if args.channel else "Default Seeds")
             telegram_bot.send_message(
                 f"🚀 *Worker `{config.NODE_ID}` started (Stage 1: Raw Ingest - `main.py`) on {env_str}!*\n\n"
+                f"• *Target*: {target_desc}\n"
                 f"• *Bucket*: `{config.BUCKET_ID}`\n"
                 f"• *Batch Size*: `{args.batch_size}` videos\n"
-                f"• *Concurrency*: `{args.concurrency}` parallel streams (Kaggle 4-vCPU optimized)\n"
+                f"• *Concurrency*: `{args.concurrency}` parallel streams (High-speed native streamer)\n"
                 f"• *Cookies*: {cookie_label}\n"
                 f"• *Stage*: Ingestion only (No segmentation)\n"
                 f"• *Status*: Active and streaming downloads"
@@ -224,7 +262,7 @@ def main():
 
     # 7. Start Ingestion Worker
     worker.start()
-    print_banner(channel=channel_input, batch_size=args.batch_size, concurrency=args.concurrency, buffer_gb=args.buffer_gb)
+    print_banner(channel=args.channel, search=args.search, limit=args.limit, batch_size=args.batch_size, concurrency=args.concurrency, buffer_gb=args.buffer_gb)
 
     print(f"[BOOT] Running Stage 1 ingestion worker. Downloading audio for channel(s)...")
     try:

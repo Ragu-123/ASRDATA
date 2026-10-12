@@ -267,16 +267,17 @@ class IngestionWorker:
                             self.active_videos[vid_id]["eta"] = eta_clean
                             self.download_speed = speed_clean
 
+            # Optimal audio format: Pure audio stream (m4a/opus) to avoid downloading entire video containers
             ydl_opts = {
-                'format': '18/ba[ext=m4a]/ba[ext=opus]/ba/b',
+                'format': 'ba[ext=m4a]/ba[ext=opus]/ba/b',
                 'outtmpl': str(config.STAGING_DIR / f"{vid_id}.%(ext)s"),
                 'quiet': True,
                 'no_warnings': True,
                 'socket_timeout': 30,
                 'retries': 5,
                 'fragment_retries': 5,
-                'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else config.YTDLP_EXTRACTOR_ARGS,
-                'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', {'ejs': 'github'}),
+                'extractor_args': config.get_ytdlp_extractor_args() if hasattr(config, "get_ytdlp_extractor_args") else getattr(config, "YTDLP_EXTRACTOR_ARGS", {}),
+                'remote_components': getattr(config, 'YTDLP_REMOTE_COMPONENTS', ['ejs:github']),
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
@@ -285,10 +286,8 @@ class IngestionWorker:
                 'progress_hooks': [ydl_hook]
             }
 
-            if getattr(config, "COOKIE_FILE", None):
-                ydl_opts["cookiefile"] = config.COOKIE_FILE
-            elif shutil.which("aria2c"):
-                # Only use aria2c when unauthenticated; aria2c drops cookies causing error 29 on YouTube CDN
+            # Use aria2c only if explicitly enabled (native yt-dlp downloader is 10x faster and avoids CDN socket throttling)
+            if getattr(config, "USE_ARIA2C", False) and shutil.which("aria2c"):
                 ydl_opts["external_downloader"] = {"default": "aria2c"}
                 ydl_opts["external_downloader_args"] = {
                     "aria2c": ["-s", "4", "-x", "4", "-k", "1M", "-j", "4"]
@@ -306,46 +305,85 @@ class IngestionWorker:
                 }
 
             # Anti-burst jitter to prevent concurrent bot detection across threads
-            time.sleep(random.uniform(0.3, 1.0))
+            time.sleep(random.uniform(0.2, 0.8))
 
             def _extract_with_fallback(current_opts):
+                """
+                Robust multi-tier download engine:
+                Tier 1: High-speed native extraction (unauthenticated, bypasses cookie PO token checks)
+                Tier 2: Page reload / GVS PO Token recovery (strip cookies & use mobile player)
+                Tier 3: Login / age-gated fallback (uses authenticated cookies only when required)
+                Tier 4: Mobile Android/iOS player fallback
+                """
+                # --- ATTEMPT 1: Primary extraction ---
                 try:
                     with yt_dlp.YoutubeDL(current_opts) as ydl:
                         return ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
                 except Exception as dl_err:
                     err_msg = str(dl_err)
-                    # 1. aria2c exit code 22 / 29 / external downloader failure: fallback to native yt-dlp downloader
-                    if any(term in err_msg.lower() for term in ["aria2c", "external downloader", "code 22", "code 29", "exited with code"]):
-                        print(f"[WORKER] ⚠️ aria2c notice on {vid_id} ({err_msg[:60]}...). Falling back to native yt-dlp downloader...")
-                        native_opts = dict(current_opts)
-                        native_opts.pop("external_downloader", None)
-                        native_opts.pop("external_downloader_args", None)
-                        try:
-                            with yt_dlp.YoutubeDL(native_opts) as ydl_native:
-                                return ydl_native.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
-                        except Exception as native_err:
-                            err_msg = str(native_err)
-                            current_opts = native_opts
 
-                    # 2. If mobile client extraction failed and valid COOKIE_FILE is configured: retry with cookies
-                    if getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
-                        print(f"[WORKER] ⚠️ Retrying {vid_id} with authenticated YouTube cookies...")
-                        cookie_opts = dict(current_opts)
-                        cookie_opts["cookiefile"] = config.COOKIE_FILE
-                        cookie_opts["extractor_args"] = {
-                            "youtube": {
-                                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
-                            }
+                # --- RECOVERY TIER 1: External Downloader (aria2c) failure -> Native yt-dlp ---
+                if any(term in err_msg.lower() for term in ["aria2c", "external downloader", "code 22", "code 29", "exited with code"]):
+                    print(f"[WORKER] ⚠️ aria2c notice on {vid_id}. Falling back to native yt-dlp downloader...")
+                    native_opts = dict(current_opts)
+                    native_opts.pop("external_downloader", None)
+                    native_opts.pop("external_downloader_args", None)
+                    try:
+                        with yt_dlp.YoutubeDL(native_opts) as ydl_native:
+                            return ydl_native.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                    except Exception as native_err:
+                        err_msg = str(native_err)
+                        current_opts = native_opts
+
+                # --- RECOVERY TIER 2: 'The page needs to be reloaded' / GVS PO Token error ---
+                # YouTube enforces GVS PO Token binding on web/tv sessions with cookies on datacenter IPs.
+                # Stripping cookies and using mobile/clean clients bypasses this instantly!
+                if any(kw in err_msg.lower() for kw in ["page needs to be reloaded", "gvs po token", "unplayable"]):
+                    print(f"[WORKER] 🔄 {vid_id} encountered YouTube page reload / PO token challenge. Retrying cleanly with mobile player...")
+                    clean_opts = dict(current_opts)
+                    clean_opts.pop("cookiefile", None)
+                    clean_opts["extractor_args"] = {
+                        "youtube": {
+                            "player_client": ["android", "ios"]
                         }
-                        cookie_opts.pop("external_downloader", None)
-                        cookie_opts.pop("external_downloader_args", None)
-                        try:
-                            with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
-                                return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
-                        except Exception as cookie_err:
-                            pass
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(clean_opts) as ydl_clean:
+                            return ydl_clean.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                    except Exception as clean_err:
+                        err_msg = str(clean_err)
 
-                    raise native_err if 'native_err' in locals() else dl_err
+                # --- RECOVERY TIER 3: Sign-in / Age-restricted video -> Try cookies ---
+                is_login_required = any(kw in err_msg.lower() for kw in ["sign in", "confirm your age", "private video", "login_required"])
+                if is_login_required and getattr(config, "COOKIE_FILE", None) and not current_opts.get("cookiefile"):
+                    print(f"[WORKER] 🔑 {vid_id} requires age/login confirmation. Retrying with authenticated YouTube cookies...")
+                    cookie_opts = dict(current_opts)
+                    cookie_opts["cookiefile"] = config.COOKIE_FILE
+                    cookie_opts.pop("external_downloader", None)
+                    cookie_opts.pop("external_downloader_args", None)
+                    try:
+                        with yt_dlp.YoutubeDL(cookie_opts) as ydl_cookie:
+                            return ydl_cookie.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                    except Exception as cookie_err:
+                        err_msg = str(cookie_err)
+
+                # --- RECOVERY TIER 4: Mobile Client Fallback (Android/iOS) ---
+                if "android" not in str(current_opts.get("extractor_args", {})):
+                    print(f"[WORKER] 📱 Retrying {vid_id} with mobile player client (Android/iOS)...")
+                    mobile_opts = dict(current_opts)
+                    mobile_opts.pop("cookiefile", None)
+                    mobile_opts["extractor_args"] = {
+                        "youtube": {
+                            "player_client": ["android", "ios"]
+                        }
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(mobile_opts) as ydl_mob:
+                            return ydl_mob.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=True)
+                    except Exception as mob_err:
+                        err_msg = str(mob_err)
+
+                raise RuntimeError(err_msg)
 
             try:
                 info = _extract_with_fallback(ydl_opts)

@@ -73,23 +73,66 @@ def validate_youtube_cookies(path_or_str: str) -> bool:
     except Exception:
         return True
 
-def get_ytdlp_extractor_args() -> dict:
-    """Return optimal yt-dlp extractor args based on whether cookies are active.
-    - With authenticated cookies: prioritize clients that support Netscape cookies
-      ('tv', 'mweb', 'web_safari', 'default') so YouTube receives the authenticated session.
-    - Without cookies: use mobile/tv clients ('android', 'ios', 'tv') and skip desktop web
-      to bypass datacenter IP bot detection challenges.
+def ensure_js_runtime() -> Optional[str]:
+    """Ensure Deno or Node JS runtime is available and on PATH for yt-dlp EJS challenge solving."""
+    # 1. Check existing Deno on PATH
+    deno_in_path = shutil.which("deno")
+    if deno_in_path:
+        return deno_in_path
+
+    # 2. Check ~/.deno/bin/deno
+    user_deno = Path.home() / ".deno" / "bin" / "deno"
+    if user_deno.exists():
+        bin_dir = str(user_deno.parent)
+        if bin_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
+        return str(user_deno)
+
+    # 3. Check common Node.js paths (e.g. Kaggle /tools/node/bin/node)
+    for node_candidate in ["/tools/node/bin", "/usr/bin", "/usr/local/bin"]:
+        node_file = Path(node_candidate) / "node"
+        if node_file.exists() and os.access(str(node_file), os.X_OK):
+            if node_candidate not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = f"{node_candidate}:{os.environ.get('PATH', '')}"
+
+    # 4. If neither Deno nor Node is present, install Deno on Linux/Kaggle
+    if not shutil.which("deno") and not shutil.which("node"):
+        if sys.platform.startswith("linux") or IS_KAGGLE:
+            try:
+                import subprocess
+                subprocess.run("curl -fsSL https://deno.land/install.sh | sh", shell=True, capture_output=True, timeout=30)
+                if user_deno.exists():
+                    bin_dir = str(user_deno.parent)
+                    os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
+                    return str(user_deno)
+            except Exception:
+                pass
+
+    return shutil.which("deno") or shutil.which("node")
+
+def ensure_deno_installed() -> Optional[str]:
+    return ensure_js_runtime()
+
+DENO_PATH = ensure_js_runtime()
+YTDLP_REMOTE_COMPONENTS = ["ejs:github"]
+YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
+
+def get_ytdlp_extractor_args(force_mobile: bool = False) -> dict:
+    """Return optimal yt-dlp extractor args.
+    - Default: skip broken embedded/vr players and let yt-dlp use modern clients (visionos, web, etc.)
+    - Force mobile: uses android/ios clients for strict bot-bypass fallback.
+    - Never force desktop web/tv clients with session cookies on datacenter IPs to prevent
+      'The page needs to be reloaded' / GVS PO Token unplayable errors.
     """
-    if COOKIE_FILE or os.getenv("COOKIE_FILE"):
+    if force_mobile:
         return {
             "youtube": {
-                "player_client": ["tv", "mweb", "web_safari", "default", "android"]
+                "player_client": ["android", "ios"]
             }
         }
     return {
         "youtube": {
-            "player_client": ["android", "ios", "tv"],
-            "player_skip": ["web", "web_embedded", "android_vr"]
+            "player_skip": ["web_embedded", "android_vr"]
         }
     }
 
@@ -119,39 +162,15 @@ def set_cookie_file(path_str: str, validate: bool = True) -> Optional[str]:
         COOKIE_FILE = str(p.resolve())
         os.environ["COOKIE_FILE"] = COOKIE_FILE
         YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
-        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
+        YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_skip=web_embedded,android_vr"'
         print(f"[CONFIG] 🍪 YouTube Cookies: ACTIVE ({COOKIE_FILE})")
         return COOKIE_FILE
     return None
 
-def ensure_deno_installed() -> Optional[str]:
-    """Ensure Deno JS runtime is installed for yt-dlp EJS challenge solving."""
-    deno_in_path = shutil.which("deno")
-    if deno_in_path:
-        return deno_in_path
-    user_deno = Path.home() / ".deno" / "bin" / "deno"
-    if user_deno.exists():
-        bin_dir = str(user_deno.parent)
-        if bin_dir not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
-        return str(user_deno)
-    if sys.platform.startswith("linux") or IS_KAGGLE:
-        try:
-            import subprocess
-            subprocess.run("curl -fsSL https://deno.land/install.sh | sh", shell=True, capture_output=True, timeout=30)
-            if user_deno.exists():
-                bin_dir = str(user_deno.parent)
-                os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
-                return str(user_deno)
-        except Exception:
-            pass
-    return None
+# Use aria2c toggle (Default False: native yt-dlp downloader is 10x faster and avoids YouTube CDN throttling)
+USE_ARIA2C = os.getenv("USE_ARIA2C", "false").lower() in ("true", "1")
 
-DENO_PATH = ensure_deno_installed()
-YTDLP_REMOTE_COMPONENTS = {"ejs": "github"}
-YTDLP_REMOTE_COMPONENTS_CLI = "--remote-components ejs:github"
-
-# Prioritize scanning /kaggle/input for the freshest cookies first
+# Scan /kaggle/input for cookies if explicitly present, but treat as fallback asset
 if os.path.exists("/kaggle/input"):
     try:
         for _f in sorted(Path("/kaggle/input").rglob("*cookie*.txt"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -193,11 +212,7 @@ TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_US
 
 # yt-dlp Bot Detection Bypass Extractor Args
 YTDLP_EXTRACTOR_ARGS = get_ytdlp_extractor_args()
-YTDLP_EXTRACTOR_ARGS_CLI = (
-    '--extractor-args "youtube:player_client=tv,mweb,web_safari,default,android"'
-    if COOKIE_FILE else
-    '--extractor-args "youtube:player_client=android,ios,tv;player_skip=web,web_embedded,android_vr"'
-)
+YTDLP_EXTRACTOR_ARGS_CLI = '--extractor-args "youtube:player_skip=web_embedded,android_vr"'
 
 # Quota & Batch Controls
 DISK_PER_NODE_GB = 19.5
