@@ -114,6 +114,12 @@ MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 CONCURRENCY = int(os.getenv("CONCURRENCY", "4"))
 THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2048"))  # 2k reasoning tokens (fast & avoids Cloudflare 100s timeout)
 
+# Anti-Abuse Rate Protection & Dynamic Cooldown
+COOLDOWN_EVERY = int(os.getenv("COOLDOWN_EVERY", "250"))          # Number of requests before cooldown (0 to disable)
+COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "10.0"))    # Base cooldown duration in seconds
+COOLDOWN_JITTER = float(os.getenv("COOLDOWN_JITTER", "5.0"))       # Random jitter added to pause (seconds)
+REQUEST_JITTER = float(os.getenv("REQUEST_JITTER", "0.15"))         # Micro-jitter between requests to prevent robotic lockstep
+
 # Distributed Lease Controls
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "3"))  # 3 videos per lease
 LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "60"))

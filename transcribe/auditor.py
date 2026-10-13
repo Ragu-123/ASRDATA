@@ -5,7 +5,7 @@ import base64
 import asyncio
 import random
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -164,33 +164,92 @@ class GeminiAuditor:
                         }
                     await asyncio.sleep(sleep_sec)
 
-    async def audit_batch(self, segments: List[Dict[str, Any]], desc: str = "Transcribing clips") -> List[Dict[str, Any]]:
-        """Audits multiple segments concurrently using the Semaphore with real-time tqdm progress bar."""
+    async def audit_batch(
+        self,
+        segments: List[Dict[str, Any]],
+        desc: str = "Transcribing clips",
+        cooldown_every: int = config.COOLDOWN_EVERY,
+        cooldown_seconds: float = config.COOLDOWN_SECONDS,
+        cooldown_jitter: float = config.COOLDOWN_JITTER,
+        request_jitter: float = config.REQUEST_JITTER,
+        cooldown_callback: Optional[Callable[[], None]] = None,
+        on_chunk_done: Optional[Callable[[List[Dict[str, Any]]], None]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Audits multiple segments concurrently using the Semaphore with real-time tqdm progress bar.
+        Incorporates rate protection cooldowns: every ~250 requests (randomized), pauses for
+        cooldown_seconds (with random jitter) to keep Gemini web sessions safe from anti-abuse flagging.
+        """
         if not segments:
             return []
 
-        results = [None] * len(segments)
-        pbar = tqdm(total=len(segments), desc=f"🎙️  {desc}", unit="clip", dynamic_ncols=True)
+        total_segs = len(segments)
+        results = [None] * total_segs
+        pbar = tqdm(total=total_segs, desc=f"🎙️  {desc}", unit="clip", dynamic_ncols=True)
         ok_count = 0
         fallback_count = 0
 
-        async def _run_indexed(idx: int, seg: Dict[str, Any]):
-            nonlocal ok_count, fallback_count
-            # Stagger startup of initial parallel requests to avoid thundering herd on Cloudflare tunnel
-            if idx < self.concurrency:
-                await asyncio.sleep(idx * 0.25)
-
-            res = await self.audit_single_segment(seg)
-            results[idx] = res
-            if res.get("status") == "ok":
-                ok_count += 1
+        chunk_start = 0
+        chunk_idx = 1
+        while chunk_start < total_segs:
+            # Pick a randomized chunk size around cooldown_every (e.g. 210-265) to look organic
+            if cooldown_every > 0:
+                low = max(40, int(cooldown_every * 0.85))
+                high = max(low + 10, int(cooldown_every * 1.15))
+                chunk_len = random.randint(low, high)
             else:
-                fallback_count += 1
-            pbar.set_postfix({"OK": ok_count, "Fallback": fallback_count})
-            pbar.update(1)
-            return res
+                chunk_len = total_segs
 
-        tasks = [_run_indexed(i, s) for i, s in enumerate(segments)]
-        await asyncio.gather(*tasks)
+            chunk_end = min(chunk_start + chunk_len, total_segs)
+            current_slice = segments[chunk_start:chunk_end]
+
+            async def _run_indexed(global_idx: int, local_idx: int, seg: Dict[str, Any]):
+                nonlocal ok_count, fallback_count
+                # Stagger startup of initial parallel requests to avoid thundering herd on Cloudflare tunnel
+                if local_idx < self.concurrency:
+                    await asyncio.sleep(local_idx * 0.25)
+                elif request_jitter > 0:
+                    # Subtle human-like micro-delay between requests to avoid robotic burst patterns
+                    await asyncio.sleep(random.uniform(0.05, request_jitter))
+
+                res = await self.audit_single_segment(seg)
+                results[global_idx] = res
+                if res.get("status") == "ok":
+                    ok_count += 1
+                else:
+                    fallback_count += 1
+                pbar.set_postfix({"OK": ok_count, "Fallback": fallback_count})
+                pbar.update(1)
+                return res
+
+            tasks = [
+                _run_indexed(chunk_start + i, i, seg)
+                for i, seg in enumerate(current_slice)
+            ]
+            chunk_results = await asyncio.gather(*tasks)
+
+            if on_chunk_done:
+                try:
+                    on_chunk_done(chunk_results)
+                except Exception as e:
+                    tqdm.write(f"[AUDITOR] Notice in on_chunk_done callback: {e}")
+
+            chunk_start = chunk_end
+
+            # Rate protection cooldown: pause between chunks if more clips remain
+            if chunk_start < total_segs and cooldown_every > 0:
+                pause_sec = random.uniform(cooldown_seconds, cooldown_seconds + cooldown_jitter)
+                tqdm.write(
+                    f"\n[AUDITOR] ☕ Rate protection cooldown: Completed {chunk_end}/{total_segs} clips "
+                    f"({ok_count} Gemini OK). Pausing {pause_sec:.1f}s to keep Gemini session safe..."
+                )
+                if cooldown_callback:
+                    try:
+                        cooldown_callback()
+                    except Exception:
+                        pass
+                await asyncio.sleep(pause_sec)
+                chunk_idx += 1
+
         pbar.close()
         return results

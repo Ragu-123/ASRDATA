@@ -32,7 +32,16 @@ from transcribe.syncer import ParquetDatasetSyncer, BucketSyncer
 from transcribe.disk_guard import DiskGuard
 from transcribe.telegram_bot import TelegramClusterBot
 
-def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = config.SEGMENTED_DATASET_REPO, audited_dataset: str = config.DATASET_REPO, buffer_gb: float = config.BUFFER_GB, bot_active: bool = False):
+def print_banner(
+    proxy_url: str,
+    concurrency: int,
+    segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
+    audited_dataset: str = config.DATASET_REPO,
+    buffer_gb: float = config.BUFFER_GB,
+    bot_active: bool = False,
+    cooldown_every: int = config.COOLDOWN_EVERY,
+    cooldown_seconds: float = config.COOLDOWN_SECONDS
+):
     print("\n" + "="*70)
     print("🎙️  TAMIL ASR DISTRIBUTED TRANSCRIPTION ENGINE (TWO-TIER ARCHITECTURE)")
     print("="*70)
@@ -42,6 +51,8 @@ def print_banner(proxy_url: str, concurrency: int, segmented_dataset: str = conf
     print(f"🎯 Audited Dataset:    {audited_dataset} (Final Corpus)")
     print(f"📦 Target Shard Size:  {buffer_gb:.1f} GB per Parquet shard (Single commit per shard)")
     print(f"⚡ Concurrency:        {concurrency} parallel requests (Sweet spot: 3 to 5)")
+    cooldown_info = f"Every ~{cooldown_every} requests (Pause: {cooldown_seconds:.0f}s)" if cooldown_every > 0 else "Disabled"
+    print(f"☕ Cooldown Guard:     {cooldown_info}")
     print(f"🤖 Gemini Model:       {config.MODEL_NAME}")
     print(f"🔗 Gemini Proxy:       {proxy_url}")
     print(f"🤖 Telegram Bot:       {'ONLINE' if bot_active else 'OFFLINE'}")
@@ -55,7 +66,9 @@ async def run_transcription_pipeline(
     segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
     audited_dataset: str = config.DATASET_REPO,
     buffer_gb: float = config.BUFFER_GB,
-    run_once: bool = False
+    run_once: bool = False,
+    cooldown_every: int = config.COOLDOWN_EVERY,
+    cooldown_seconds: float = config.COOLDOWN_SECONDS
 ):
     config.sync_runtime_secrets()
     print_banner(
@@ -64,7 +77,9 @@ async def run_transcription_pipeline(
         segmented_dataset=segmented_dataset,
         audited_dataset=audited_dataset,
         buffer_gb=buffer_gb,
-        bot_active=bool(config.TELEGRAM_BOT_TOKEN)
+        bot_active=bool(config.TELEGRAM_BOT_TOKEN),
+        cooldown_every=cooldown_every,
+        cooldown_seconds=cooldown_seconds
     )
 
     # 1. Retrieve Hugging Face Token
@@ -246,7 +261,16 @@ async def run_transcription_pipeline(
 
                 print(f"[STAGE 2] Loaded {len(clips_to_audit)} clips from {shard_file}. Transcribing with concurrency {concurrency}...")
                 t0 = time.time()
-                audited = await auditor.audit_batch(clips_to_audit, desc=f"Shard {Path(shard_file).name}")
+                audited = await auditor.audit_batch(
+                    clips_to_audit,
+                    desc=f"Shard {Path(shard_file).name}",
+                    cooldown_every=cooldown_every,
+                    cooldown_seconds=cooldown_seconds,
+                    cooldown_callback=lambda: (
+                        coordinator.update_heartbeat(status="transcribing"),
+                        coordinator.renew_shard_lease(shard_file=shard_file, segmented_repo=repo_id)
+                    )
+                )
                 elapsed = time.time() - t0
                 success_count = sum(1 for s in audited if s.get("status") == "ok")
                 print(f"[STAGE 2] Audited {len(audited)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
@@ -323,7 +347,10 @@ async def run_transcription_pipeline(
             t0 = time.time()
             audited_segments = await auditor.audit_batch(
                 segments,
-                desc=f"[{vid_id}] {vid_title[:25]}"
+                desc=f"[{vid_id}] {vid_title[:25]}",
+                cooldown_every=cooldown_every,
+                cooldown_seconds=cooldown_seconds,
+                cooldown_callback=lambda: coordinator.update_heartbeat(status="processing")
             )
             elapsed = time.time() - t0
 
@@ -361,6 +388,8 @@ def main():
     parser = argparse.ArgumentParser(description="Distributed Tamil ASR Transcriber with Segmented Dataset Pulling")
     parser.add_argument("--url", "--proxy-url", "--proxy_url", dest="proxy_url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
     parser.add_argument("--concurrency", type=int, default=config.CONCURRENCY, help="Parallel requests to Gemini (default: 4, recommended: 3-5)")
+    parser.add_argument("--cooldown-every", dest="cooldown_every", type=int, default=config.COOLDOWN_EVERY, help=f"Clips between rate protection cooldowns (default: {config.COOLDOWN_EVERY}, 0 to disable)")
+    parser.add_argument("--cooldown-sec", "--cooldown-seconds", dest="cooldown_seconds", type=float, default=config.COOLDOWN_SECONDS, help=f"Cooldown pause duration in seconds (default: {config.COOLDOWN_SECONDS}s)")
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
     parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
@@ -453,7 +482,9 @@ def main():
         segmented_dataset=args.segmented_dataset,
         audited_dataset=args.audited_dataset,
         buffer_gb=args.buffer_gb,
-        run_once=args.once
+        run_once=args.once,
+        cooldown_every=args.cooldown_every,
+        cooldown_seconds=args.cooldown_seconds
     ))
 
 if __name__ == "__main__":

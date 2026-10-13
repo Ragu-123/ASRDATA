@@ -1010,6 +1010,32 @@ class TranscriptionCoordinator:
             print(f"[COORDINATOR] Notice leasing segmented shard: {e}")
             return None
 
+    def renew_shard_lease(self, shard_file: str, segmented_repo: str = config.SEGMENTED_DATASET_REPO) -> bool:
+        """Extends the expiration time of the currently held shard lease."""
+        try:
+            now = time.time()
+            lease_info = {
+                "worker_id": self.worker_id,
+                "shard_file": shard_file,
+                "repo_id": segmented_repo,
+                "leased_at": now,
+                "expires_at": now + (config.LEASE_TTL_MINUTES * 60)
+            }
+            with tempfile.NamedTemporaryFile(suffix=".json", mode="w", encoding="utf-8", delete=False) as tmp:
+                json.dump(lease_info, tmp, indent=2)
+                t_lease = Path(tmp.name)
+            try:
+                self.api.batch_bucket_files(
+                    bucket_id=self.tracking_bucket,
+                    add=[(t_lease, f"transcribe_shard_leases/{self.worker_id}.json")]
+                )
+            finally:
+                if t_lease.exists():
+                    t_lease.unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
+
     def release_shard_lease(self):
         """Release this worker's shard lease."""
         try:
@@ -1019,4 +1045,5 @@ class TranscriptionCoordinator:
             )
         except Exception:
             pass
+
 
