@@ -24,6 +24,7 @@ def sync_runtime_secrets():
     TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
     TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", "5959376217")
     TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", "")
+    resolve_secret("HF_TOKEN", "")
     return TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
 
 TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID = sync_runtime_secrets()
@@ -68,11 +69,6 @@ VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "350"))
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "5"))
 LEASE_TTL_MINUTES = int(os.getenv("LEASE_TTL_MINUTES", "45"))
 WORKER_ID = os.getenv("SEGMENTER_ID", f"segmenter-{uuid.uuid4().hex[:6]}")
-
-# Telegram Bot Settings
-TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", resolve_secret("ADMIN_USER_ID", resolve_secret("TELEGRAM_CHAT_ID", "5959376217")))
-TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", resolve_secret("ADMIN_PASSCODE", ""))
 
 def get_ytdlp_extractor_args() -> dict:
     """Return clean mobile yt-dlp extractor args (segmentation does not need cookies)."""

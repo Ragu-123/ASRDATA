@@ -100,6 +100,55 @@ TELEGRAM_BOT_TOKEN=9988776655:AAHcustom_bot_token_abc
         self.assertEqual(resolve_secret("HF_TOKEN"), "hf_cli_override_123")
         self.assertEqual(resolve_secret("TELEGRAM_ADMIN_ID"), "999888")
 
+    def test_secret_resolver_cli_args_proxy_token(self):
+        """Verify --proxy-token CLI flag updates PROXY_TOKEN."""
+        import argparse
+        from secret_resolver import add_secret_cli_args, apply_cli_secrets
+
+        parser = argparse.ArgumentParser()
+        add_secret_cli_args(parser)
+        args = parser.parse_args(["--proxy-token", "proxy_key_abc_999"])
+        apply_cli_secrets(args)
+
+        self.assertEqual(resolve_secret("PROXY_TOKEN"), "proxy_key_abc_999")
+
+    def test_pipeline_stages_inherit_hardcoded_secrets(self):
+        """Verify that segment and transcribe configs inherit HARDCODED_SECRETS and sync properly."""
+        from secret_resolver import HARDCODED_SECRETS, set_secret
+        import segment.config as seg_config
+        import transcribe.config as tr_config
+        import config as main_config
+
+        # Set hardcoded secrets
+        orig_hf = HARDCODED_SECRETS.get("HF_TOKEN", "")
+        orig_proxy = HARDCODED_SECRETS.get("PROXY_TOKEN", "")
+        try:
+            for k in ["HF_TOKEN", "hf_token", "HUGGING_FACE_HUB_TOKEN", "PROXY_TOKEN"]:
+                os.environ.pop(k, None)
+            HARDCODED_SECRETS["HF_TOKEN"] = "hf_hardcoded_secret_token_123"
+            HARDCODED_SECRETS["PROXY_TOKEN"] = "proxy_hardcoded_token_456"
+
+            # Sync secrets on all configs
+            main_config.sync_runtime_secrets()
+            seg_config.sync_runtime_secrets()
+            tr_config.sync_runtime_secrets()
+
+            # Verify all three stages see the HF token
+            self.assertEqual(main_config.get_hf_token(), "hf_hardcoded_secret_token_123")
+            self.assertEqual(seg_config.get_hf_token(), "hf_hardcoded_secret_token_123")
+            self.assertEqual(tr_config.get_hf_token(), "hf_hardcoded_secret_token_123")
+
+            # Verify Telegram secrets are active across all stages
+            self.assertTrue(bool(seg_config.TELEGRAM_BOT_TOKEN))
+            self.assertTrue(bool(tr_config.TELEGRAM_BOT_TOKEN))
+            self.assertTrue(bool(main_config.TELEGRAM_BOT_TOKEN))
+
+            # Verify PROXY_TOKEN in transcribe config
+            self.assertEqual(tr_config.PROXY_TOKEN, "proxy_hardcoded_token_456")
+        finally:
+            HARDCODED_SECRETS["HF_TOKEN"] = orig_hf
+            HARDCODED_SECRETS["PROXY_TOKEN"] = orig_proxy
+
     # 2. TELEGRAM BOT SEND_MESSAGE AND FALLBACKS
     def test_telegram_bot_send_message_target_chat_id_fallback(self):
         """Verify send_message sends to explicit chat_id or falls back to admin_chat_id or admin_user_id."""

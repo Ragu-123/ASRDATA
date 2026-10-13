@@ -44,10 +44,12 @@ MAX_LOCAL_DISK_GB = float(os.getenv("MAX_LOCAL_DISK_GB", "5.0"))
 
 # Telegram Bot Configuration
 def sync_runtime_secrets():
-    global TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID, TELEGRAM_ADMIN_PASSCODE
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID, TELEGRAM_ADMIN_PASSCODE, PROXY_TOKEN
     TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
     TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", "5959376217")
     TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", "")
+    PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "")
+    resolve_secret("HF_TOKEN", "")
     return TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
 
 TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID = sync_runtime_secrets()

@@ -48,11 +48,14 @@ def run_segment_pipeline(
     buffer_gb: float = config.BUFFER_GB,
     run_once: bool = False
 ):
+    config.sync_runtime_secrets()
     hf_token = config.get_hf_token()
     if not hf_token:
         print("[ERROR] HF_TOKEN is not set!", file=sys.stderr)
-        print("On Kaggle: Add 'HF_TOKEN' into Notebook Secrets (Add-ons -> Secrets).", file=sys.stderr)
-        print("Locally: export HF_TOKEN=your_token or set HF_TOKEN=your_token in .env.", file=sys.stderr)
+        print("1. CLI flag: Run with '--hf-token hf_...'", file=sys.stderr)
+        print("2. Hardcoded: Set HARDCODED_SECRETS['HF_TOKEN'] in secret_resolver.py", file=sys.stderr)
+        print("3. Kaggle Secrets: Add 'HF_TOKEN' into Notebook Secrets (Add-ons -> Secrets)", file=sys.stderr)
+        print("4. Locally: Set HF_TOKEN in .env or run 'export HF_TOKEN=...'\n", file=sys.stderr)
         sys.exit(1)
 
     api = HfApi(token=hf_token)

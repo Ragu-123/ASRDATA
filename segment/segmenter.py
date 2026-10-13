@@ -65,6 +65,7 @@ class AudioSegmenter:
                     repo_id=config.RAW_DATASET_REPO,
                     filename=f"audios/{fname}",
                     repo_type="dataset",
+                    token=getattr(self.api, "token", None) or config.get_hf_token(),
                     local_dir=str(dest_dir)
                 )
                 p = Path(dl_path)

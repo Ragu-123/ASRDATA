@@ -61,6 +61,8 @@ def set_secret(key: str, value: str) -> None:
     if cleaned:
         os.environ[key] = cleaned
         HARDCODED_SECRETS[key] = cleaned
+        if key == "HF_TOKEN":
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = cleaned
 
 def update_secrets(secrets_dict: dict) -> None:
     """Bulk update secrets from a dictionary."""
@@ -201,7 +203,21 @@ def resolve_secret(key: str, default: str = "") -> str:
             if val_str:
                 return val_str
 
-    # 5. Default argument
+    # 5. Global user cache fallback (~/.cache/huggingface/token)
+    if key in ("HF_TOKEN", "token"):
+        for cache_path in [
+            Path.home() / ".cache" / "huggingface" / "token",
+            Path.home() / ".huggingface" / "token"
+        ]:
+            if cache_path.exists() and cache_path.is_file():
+                try:
+                    c_val = cache_path.read_text(encoding="utf-8").strip()
+                    if c_val and not c_val.startswith("#"):
+                        return c_val
+                except Exception:
+                    pass
+
+    # 6. Default argument
     if default:
         return default
 
@@ -232,6 +248,13 @@ def add_secret_cli_args(parser) -> None:
             default="",
             help="Telegram Admin chat ID (e.g. 5959376217)"
         )
+        group.add_argument(
+            "--proxy-token", "--proxy_token",
+            dest="proxy_token",
+            type=str,
+            default="",
+            help="Gemini Canvas Proxy authentication token / bearer key"
+        )
     except Exception:
         pass
 
@@ -243,3 +266,5 @@ def apply_cli_secrets(args) -> None:
         set_secret("TELEGRAM_BOT_TOKEN", args.telegram_bot_token)
     if getattr(args, "telegram_admin_id", None):
         set_secret("TELEGRAM_ADMIN_ID", str(args.telegram_admin_id))
+    if getattr(args, "proxy_token", None):
+        set_secret("PROXY_TOKEN", args.proxy_token)

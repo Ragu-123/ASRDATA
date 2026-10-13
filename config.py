@@ -282,6 +282,7 @@ def sync_runtime_secrets():
     global TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
     TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
     TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", "5959376217")
+    resolve_secret("HF_TOKEN", "")
     return TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
 
 TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID = sync_runtime_secrets()

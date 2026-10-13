@@ -57,11 +57,15 @@ async def run_transcription_pipeline(
     buffer_gb: float = config.BUFFER_GB,
     run_once: bool = False
 ):
+    config.sync_runtime_secrets()
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
     if not hf_token:
         print("[ERROR] HF_TOKEN is not set!", file=sys.stderr)
-        print("On Kaggle: Add 'HF_TOKEN' to Notebook Secrets (Add-ons -> Secrets).", file=sys.stderr)
+        print("1. CLI flag: Run with '--hf-token hf_...'", file=sys.stderr)
+        print("2. Hardcoded: Set HARDCODED_SECRETS['HF_TOKEN'] in secret_resolver.py", file=sys.stderr)
+        print("3. Kaggle Secrets: Add 'HF_TOKEN' into Notebook Secrets (Add-ons -> Secrets)", file=sys.stderr)
+        print("4. Locally: Set HF_TOKEN in .env or run 'export HF_TOKEN=...'\n", file=sys.stderr)
         sys.exit(1)
 
     api = HfApi(token=hf_token)
@@ -93,7 +97,7 @@ async def run_transcription_pipeline(
         print("[INIT] ℹ️ TELEGRAM_BOT_TOKEN is not configured. Telegram alerts disabled.")
 
     # 4. Initialize Segmenter, Auditor, Parquet Syncer, and Disk Guard
-    auditor = GeminiAuditor(proxy_url=proxy_url, concurrency=concurrency)
+    auditor = GeminiAuditor(proxy_url=proxy_url, token=config.PROXY_TOKEN, concurrency=concurrency)
     segmenter = AudioSegmenter(api=api, telegram_bot=telegram_bot)
     syncer = ParquetDatasetSyncer(
         api=api,
