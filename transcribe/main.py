@@ -207,21 +207,31 @@ async def run_transcription_pipeline(
             with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
                 local_shard_p = Path(tmp.name)
             try:
-                # Download shard
-                if hasattr(api, "download_bucket_files"):
-                    api.download_bucket_files(bucket_id=repo_id, files=[(shard_file, local_shard_p)])
-                elif hasattr(api, "storage") and repo_id in getattr(api, "storage", {}):
+                # Download shard (segmented_repo is a Hugging Face Dataset repo)
+                if hasattr(api, "storage") and repo_id in getattr(api, "storage", {}):
                     # In mock tests
                     local_shard_p.write_bytes(api.storage[repo_id][shard_file])
                 else:
-                    from huggingface_hub import hf_hub_download
-                    down = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=shard_file, token=config.get_hf_token())
-                    shutil.copyfile(down, local_shard_p)
+                    try:
+                        from huggingface_hub import hf_hub_download
+                        down = hf_hub_download(
+                            repo_id=repo_id,
+                            repo_type="dataset",
+                            filename=shard_file,
+                            token=config.get_hf_token()
+                        )
+                        shutil.copyfile(down, local_shard_p)
+                    except Exception as dataset_err:
+                        # Fallback in case repo was created as an HF Bucket
+                        if hasattr(api, "download_bucket_files"):
+                            api.download_bucket_files(bucket_id=repo_id, files=[(shard_file, local_shard_p)])
+                        else:
+                            raise dataset_err
 
                 table = pq.read_table(str(local_shard_p))
                 clips_to_audit = []
-                for row_idx in range(table.num_rows):
-                    row_dict = table.slice(row_idx, 1).to_pylist()[0]
+                pylist = table.to_pylist()
+                for row_idx, row_dict in enumerate(pylist):
                     audio_field = row_dict.get("audio", {})
                     audio_bytes = audio_field.get("bytes") if isinstance(audio_field, dict) else None
                     clips_to_audit.append({
