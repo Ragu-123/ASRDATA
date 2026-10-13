@@ -58,6 +58,15 @@ async def run_transcription_pipeline(
     run_once: bool = False
 ):
     config.sync_runtime_secrets()
+    print_banner(
+        proxy_url=proxy_url,
+        concurrency=concurrency,
+        segmented_dataset=segmented_dataset,
+        audited_dataset=audited_dataset,
+        buffer_gb=buffer_gb,
+        bot_active=bool(config.TELEGRAM_BOT_TOKEN)
+    )
+
     # 1. Retrieve Hugging Face Token
     hf_token = config.get_hf_token()
     if not hf_token:
@@ -116,24 +125,20 @@ async def run_transcription_pipeline(
     )
 
     # 5. Test Proxy Connectivity
-    print("[INIT] Testing connection to Gemini Canvas Proxy...")
+    print(f"[INIT] Testing connection to Gemini Canvas Proxy at '{auditor.proxy_url}'...")
     connected = await auditor.test_connection()
     if not connected:
-        print(f"\n[ERROR] Unable to connect to Gemini Canvas Proxy at '{proxy_url}'.", file=sys.stderr)
-        print("Please verify:", file=sys.stderr)
-        print("1. Google Chrome has the Gemini Canvas tab open and active.", file=sys.stderr)
-        print("2. The canvas-proxy.html shows green 'Proxy Active' status.", file=sys.stderr)
-        print("3. The /v1 URL is correct and includes /v1 at the end.\n", file=sys.stderr)
+        print(f"\n[ERROR] Unable to connect to Gemini Canvas Proxy at '{auditor.proxy_url}'.", file=sys.stderr)
+        if "vnc.html" in proxy_url.lower() or "novnc" in proxy_url.lower():
+            print("👉 CRITICAL: You provided the noVNC desktop viewer URL ('vnc.html').", file=sys.stderr)
+            print("👉 The Gemini Canvas Proxy is the HTTP API tunnel (/v1 endpoint), NOT the noVNC web viewer.", file=sys.stderr)
+            print("👉 In your remote desktop, make sure the Canvas Proxy server/script is running and provides an HTTP tunnel link ending in /v1.\n", file=sys.stderr)
+        else:
+            print("Please verify:", file=sys.stderr)
+            print("1. Google Chrome has the Gemini Canvas tab open and active.", file=sys.stderr)
+            print("2. The canvas-proxy.html shows green 'Proxy Active' status.", file=sys.stderr)
+            print("3. The /v1 URL is correct and includes /v1 at the end.\n", file=sys.stderr)
         sys.exit(1)
-
-    print_banner(
-        proxy_url=auditor.proxy_url,
-        concurrency=concurrency,
-        segmented_dataset=segmented_dataset,
-        audited_dataset=audited_dataset,
-        buffer_gb=buffer_gb,
-        bot_active=(telegram_bot is not None)
-    )
 
     running = True
     paused = False

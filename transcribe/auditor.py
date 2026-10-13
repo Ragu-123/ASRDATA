@@ -23,8 +23,21 @@ class GeminiAuditor:
     adhering to the 23 Tamil ASR rules with 3-5 concurrent requests.
     """
     def __init__(self, proxy_url: str, token: str = config.PROXY_TOKEN, model: str = config.MODEL_NAME, concurrency: int = config.CONCURRENCY):
+        raw_url = proxy_url.strip()
+        # Clean query strings and fragments (e.g. ?autoconnect=true&resize=scale, #...)
+        if "?" in raw_url:
+            raw_url = raw_url.split("?")[0].strip()
+        if "#" in raw_url:
+            raw_url = raw_url.split("#")[0].strip()
+
+        # If user inadvertently pasted the noVNC viewer URL
+        if "vnc.html" in raw_url.lower():
+            print(f"[WARN] ⚠️ Detected noVNC desktop viewer page in URL ('{proxy_url}').", file=sys.stderr)
+            print("[WARN] ⚠️ The Gemini Canvas Proxy must be the HTTP API tunnel endpoint (ending in /v1), NOT the noVNC web viewer.", file=sys.stderr)
+            raw_url = re.sub(r"/vnc\.html(/v1)?", "", raw_url, flags=re.IGNORECASE).rstrip("/")
+
         # Normalize proxy URL to point to /v1
-        norm_url = proxy_url.strip().rstrip("/")
+        norm_url = raw_url.rstrip("/")
         if not norm_url.endswith("/v1"):
             norm_url = f"{norm_url}/v1"
             
@@ -41,14 +54,17 @@ class GeminiAuditor:
         )
 
     async def test_connection(self) -> bool:
-        """Verify that the Gemini Canvas Proxy is live and operational."""
+        """Verify that the Gemini Canvas Proxy is live and operational with a fast 12s timeout."""
         try:
-            models = await self.client.models.list()
+            models = await asyncio.wait_for(self.client.models.list(), timeout=12.0)
             model_ids = [m.id for m in models.data]
             print(f"[AUDITOR] Connected to Gemini Canvas Proxy! Available models: {model_ids}")
             return True
+        except asyncio.TimeoutError:
+            print(f"[AUDITOR] ❌ Connection test timed out (12s) for {self.proxy_url}", file=sys.stderr)
+            return False
         except Exception as e:
-            print(f"[AUDITOR] Connection test failed for {self.proxy_url}: {e}")
+            print(f"[AUDITOR] ❌ Connection test failed for {self.proxy_url}: {e}", file=sys.stderr)
             return False
 
     async def audit_single_segment(self, segment: Dict[str, Any], max_retries: int = 4) -> Dict[str, Any]:

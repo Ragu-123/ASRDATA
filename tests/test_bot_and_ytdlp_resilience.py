@@ -87,6 +87,45 @@ TELEGRAM_BOT_TOKEN=9988776655:AAHcustom_bot_token_abc
             if temp_tokens.exists():
                 temp_tokens.unlink()
 
+    def test_secret_resolver_ipynb_parsing(self):
+        """Verify resolve_secret extracts HARDCODED_SECRETS from .ipynb notebook cells."""
+        import json
+        temp_nb = Path.cwd() / "test_notebook_secrets.ipynb"
+        nb_json = {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": [
+                        "HARDCODED_SECRETS = {\n",
+                        "    \"HF_TOKEN\": \"hf_from_notebook_cell_999\",\n",
+                        "    \"TELEGRAM_ADMIN_ID\": \"777888999\",\n",
+                        "}\n"
+                    ]
+                }
+            ]
+        }
+        try:
+            temp_nb.write_text(json.dumps(nb_json), encoding="utf-8")
+            for k in ["HF_TOKEN", "TELEGRAM_ADMIN_ID"]:
+                os.environ.pop(k, None)
+
+            hf = resolve_secret("HF_TOKEN")
+            admin = resolve_secret("TELEGRAM_ADMIN_ID")
+
+            self.assertEqual(hf, "hf_from_notebook_cell_999")
+            self.assertEqual(admin, "777888999")
+        finally:
+            if temp_nb.exists():
+                temp_nb.unlink()
+
+    def test_gemini_auditor_url_normalization(self):
+        """Verify GeminiAuditor cleans query strings and strips accidental vnc.html paths."""
+        from transcribe.auditor import GeminiAuditor
+        auditor = GeminiAuditor(
+            proxy_url="https://hull-reseller-final-reunion.trycloudflare.com/vnc.html?autoconnect=true&resize=scale/v1"
+        )
+        self.assertEqual(auditor.proxy_url, "https://hull-reseller-final-reunion.trycloudflare.com/v1")
+
     def test_secret_resolver_cli_args(self):
         """Verify apply_cli_secrets and add_secret_cli_args update runtime secrets."""
         import argparse

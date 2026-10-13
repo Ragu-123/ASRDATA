@@ -110,11 +110,26 @@ def _parse_secret_from_text(content: str, keys_to_check: List[str]) -> Optional[
             
     return None
 
+def _parse_secret_from_ipynb(content: str, keys_to_check: List[str]) -> Optional[str]:
+    """Parse secrets from Jupyter notebook (.ipynb) JSON cells."""
+    try:
+        data = json.loads(content)
+        cells = data.get("cells", [])
+        for cell in cells:
+            source = cell.get("source", [])
+            text = "".join(source) if isinstance(source, list) else str(source)
+            matched = _parse_secret_from_text(text, keys_to_check)
+            if matched:
+                return matched
+    except Exception:
+        pass
+    return None
+
 def resolve_secret(key: str, default: str = "") -> str:
     """
     Robust multi-source secret resolver:
     1. Checks os.getenv(key) and known alias variants.
-    2. Checks local token files (.env, tokens.txt, tokens.json, token.txt) in cwd, repo, and /kaggle/working.
+    2. Checks local token files (.env, tokens.txt, tokens.json, token.txt, *.ipynb) in cwd, repo, and /kaggle/working.
     3. If running on Kaggle, checks UserSecretsClient().get_secret() for key & aliases (failsafe).
     4. Checks HARDCODED_SECRETS dictionary.
     5. Returns default if not found.
@@ -138,7 +153,7 @@ def resolve_secret(key: str, default: str = "") -> str:
                 os.environ[key] = cleaned
                 return cleaned
 
-    # 2. Local token files (.env, tokens.txt, tokens.json, token.txt, HF_TOKEN.txt)
+    # 2. Local token files (.env, tokens.txt, tokens.json, token.txt, HF_TOKEN.txt, *.ipynb)
     candidate_paths = [
         Path.cwd() / ".env",
         Path.cwd() / "tokens.txt",
@@ -155,10 +170,27 @@ def resolve_secret(key: str, default: str = "") -> str:
         Path("/kaggle/working/ASRDATA/tokens.txt"),
         Path("/kaggle/working/HF_TOKEN.txt"),
         Path(f"/kaggle/working/{key}.txt"),
+        Path("/kaggle/working/__notebook_source__.ipynb"),
     ]
+    for search_root in [Path("/kaggle/working"), Path.cwd()]:
+        if search_root.exists():
+            try:
+                for ipynb in search_root.glob("*.ipynb"):
+                    if ipynb not in candidate_paths and not ipynb.name.startswith("."):
+                        candidate_paths.append(ipynb)
+            except Exception:
+                pass
     for env_file in candidate_paths:
         if env_file.exists() and env_file.is_file():
             try:
+                # If file is a Jupyter Notebook (.ipynb), search code cells
+                if env_file.suffix == ".ipynb":
+                    nb_content = env_file.read_text(encoding="utf-8", errors="ignore")
+                    matched_val = _parse_secret_from_ipynb(nb_content, keys_to_check)
+                    if matched_val:
+                        os.environ[key] = matched_val
+                        return matched_val
+
                 # If file is specifically named <KEY>.txt or token.txt (when checking HF_TOKEN)
                 if env_file.name in (f"{key}.txt", f"{key.lower()}.txt", "HF_TOKEN.txt"):
                     content = env_file.read_text(encoding="utf-8").strip()
