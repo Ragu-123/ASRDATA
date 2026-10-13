@@ -378,6 +378,51 @@ def main():
 
     proxy_url = args.proxy_url or config.DEFAULT_PROXY_URL
     if not proxy_url:
+        # 1. Try local loopback on port 8765 (if running on same machine/Kaggle notebook)
+        for cand in ["http://127.0.0.1:8765/v1", "http://localhost:8765/v1"]:
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    f"{cand}/models",
+                    headers={"Authorization": f"Bearer {config.PROXY_TOKEN or '51dfb957-7347-449b-b153-df797a72c9d5'}"}
+                )
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status in (200, 401, 403):
+                        proxy_url = cand
+                        print(f"[INIT] ⚡ Auto-detected locally running Gemini Canvas Proxy at: {proxy_url}")
+                        break
+            except Exception:
+                pass
+
+    if not proxy_url:
+        # 2. Try looking in smallest-cloud or cloudflared log files
+        cand_files = [
+            Path("/tmp/cloudflared.log"),
+            Path("/tmp/tunnel.log"),
+            Path("/tmp/smallest_cloud.log"),
+            Path("/kaggle/working/smallest-cloud/cloudflared.log"),
+            Path("/kaggle/working/smallest-cloud/tunnel.log"),
+            Path("/kaggle/working/smallest-cloud/tunnel_url.txt"),
+            Path("/kaggle/working/tunnel_url.txt"),
+        ]
+        import re
+        for f in cand_files:
+            if f.exists():
+                try:
+                    content = f.read_text(encoding="utf-8", errors="ignore")
+                    matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", content)
+                    if matches:
+                        for m in reversed(matches):
+                            if "vnc" not in m:
+                                proxy_url = f"{m}/v1"
+                                print(f"[INIT] ⚡ Auto-detected Gemini Canvas Proxy tunnel from {f.name}: {proxy_url}")
+                                break
+                except Exception:
+                    pass
+            if proxy_url:
+                break
+
+    if not proxy_url:
         print("\n" + "="*70)
         print("🔗 GEMINI CANVAS PROXY URL REQUIRED")
         print("="*70)

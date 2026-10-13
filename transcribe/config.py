@@ -48,7 +48,7 @@ def sync_runtime_secrets():
     TELEGRAM_BOT_TOKEN = resolve_secret("TELEGRAM_BOT_TOKEN", "8656137684:AAHlwGwYrNmJ-7Uzj6UshpnBr0d05V0hOKQ")
     TELEGRAM_ADMIN_ID = resolve_secret("TELEGRAM_ADMIN_ID", "5959376217")
     TELEGRAM_ADMIN_PASSCODE = resolve_secret("TELEGRAM_ADMIN_PASSCODE", "")
-    PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "")
+    PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "51dfb957-7347-449b-b153-df797a72c9d5")
     resolve_secret("HF_TOKEN", "")
     return TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID
 
@@ -107,7 +107,7 @@ DEFAULT_CHANNELS = [
 
 # Gemini Canvas Proxy Configuration
 DEFAULT_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "")
-PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "")
+PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "51dfb957-7347-449b-b153-df797a72c9d5")
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # Parallel Request Concurrency (Sweet spot: 3 to 5 parallel requests)

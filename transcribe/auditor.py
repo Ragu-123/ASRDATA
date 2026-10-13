@@ -49,7 +49,7 @@ class GeminiAuditor:
 
         self.client = AsyncOpenAI(
             base_url=self.proxy_url,
-            api_key=self.token,
+            api_key=self.token or "51dfb957-7347-449b-b153-df797a72c9d5",
             timeout=180.0
         )
 
