@@ -34,3 +34,32 @@ Below is the draft ASR transcript from initial speech recognition:
 Audit and correct this draft against the audio adhering strictly to all 23 rules. Output ONLY the final audited transcript."""
     else:
         return "Audio clip is provided. Transcribe this audio clip accurately and verbatim adhering strictly to all 23 rules. Output ONLY the final transcript."
+
+def build_bundle_prompt(timestamps: list, clips: list) -> str:
+    """Build prompt for bundled multi-clip transcription with [#cut] delimiter."""
+    N = len(timestamps)
+    timing_lines = []
+    for idx, (st, en) in enumerate(timestamps, start=1):
+        draft = clips[idx - 1].get("draft_text", "")
+        hint = f" (Draft: \"{draft}\")" if draft and draft.strip() else ""
+        timing_lines.append(f"Segment {idx}: [{st:.2f}s - {en:.2f}s]{hint}")
+    timings_str = "\n".join(timing_lines)
+
+    return f"""The attached audio contains {N} speech segments concatenated together.
+Segment timestamps:
+{timings_str}
+
+CRITICAL INSTRUCTIONS:
+1. Transcribe each segment verbatim according to the 23 Tamil ASR rules.
+2. Output the transcription for each segment in exact sequential order.
+3. Separate each segment's transcription using the delimiter '[#cut]' on its own line:
+<Segment 1 Transcript>
+[#cut]
+<Segment 2 Transcript>
+[#cut]
+...
+<Segment {N} Transcript>
+4. You MUST output exactly {N} segment transcripts separated by [#cut].
+5. If a segment has ONLY music and no speech, output '[music]'.
+6. For speech segments, end with the appropriate emotion tag: [None], [Happy], [Angry], [Sad], [Fear], [Sarcastic], [Disgust], [Surprise], or [Excited].
+7. Output ONLY the transcripts separated by '[#cut]'. Do NOT include segment numbers, markdown formatting, or notes."""

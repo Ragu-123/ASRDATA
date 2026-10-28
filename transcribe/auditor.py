@@ -4,8 +4,11 @@ import json
 import base64
 import asyncio
 import random
+import subprocess
+import tempfile
+import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -15,12 +18,93 @@ import httpx
 from tqdm import tqdm
 from openai import AsyncOpenAI
 import transcribe.config as config
-from transcribe.rules import SYSTEM_PROMPT, build_user_prompt
+from transcribe.rules import SYSTEM_PROMPT, build_user_prompt, build_bundle_prompt
+
+def parse_emotion_and_clean_text(raw_output: str) -> Tuple[str, str]:
+    """Extract dominant emotion tag from brackets e.g. [None], [Happy] and return (clean_text, emotion)."""
+    emotion = "None"
+    clean_text = (raw_output or "").strip()
+    m = re.search(r"\[(None|Happy|Angry|Sad|Fear|Sarcastic|Disgust|Surprise|Excited)\]\s*$", raw_output, re.IGNORECASE)
+    if m:
+        emotion = m.group(1).capitalize()
+        clean_text = raw_output[:m.start()].strip()
+
+    # Handle pure music acoustic tag
+    if clean_text.lower() in ["[music]", "music"] or raw_output.lower() in ["[music]", "[music] [none]"]:
+        clean_text = "[music]"
+        emotion = "None"
+
+    return clean_text, emotion
+
+
+def concatenate_audio_clips(clips: List[Dict[str, Any]], temp_dir: Path) -> Tuple[Optional[bytes], str, List[Tuple[float, float]]]:
+    """
+    Concatenates multiple audio clips into a single continuous AAC audio stream using ffmpeg.
+    Returns (merged_bytes, format, timestamps).
+    """
+    if not clips:
+        return None, "m4a", []
+
+    if len(clips) == 1:
+        c = clips[0]
+        audio_bytes = c.get("audio_bytes")
+        if audio_bytes is None and c.get("audio_path"):
+            p = Path(c["audio_path"])
+            if p.exists():
+                audio_bytes = p.read_bytes()
+        dur = float(c.get("duration", 0.0))
+        fmt = c.get("audio_format") or "m4a"
+        return audio_bytes, fmt, [(0.0, dur)]
+
+    timestamps = []
+    file_list = []
+    curr_time = 0.0
+
+    try:
+        for idx, c in enumerate(clips):
+            dur = float(c.get("duration", 0.0))
+            audio_bytes = c.get("audio_bytes")
+            if audio_bytes is None and c.get("audio_path"):
+                p = Path(c["audio_path"])
+                if p.exists():
+                    audio_bytes = p.read_bytes()
+
+            if not audio_bytes:
+                return None, "m4a", []
+
+            clip_file = temp_dir / f"bundle_clip_{idx:03d}.m4a"
+            clip_file.write_bytes(audio_bytes)
+            file_list.append(clip_file)
+            timestamps.append((curr_time, curr_time + dur))
+            curr_time += dur
+
+        concat_txt = temp_dir / "concat_list.txt"
+        with open(concat_txt, "w", encoding="utf-8") as f:
+            for cf in file_list:
+                esc_path = cf.as_posix().replace("'", "'\\''")
+                f.write(f"file '{esc_path}'\n")
+
+        merged_out = temp_dir / "merged_bundle.m4a"
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "concat", "-safe", "0",
+            "-i", str(concat_txt),
+            "-c:a", "aac", "-b:a", "64k", "-ar", "16000", "-ac", "1",
+            str(merged_out)
+        ]
+        ret = subprocess.run(cmd, capture_output=True, timeout=30)
+        if ret.returncode == 0 and merged_out.exists() and merged_out.stat().st_size > 0:
+            return merged_out.read_bytes(), "m4a", timestamps
+        else:
+            return None, "m4a", []
+    except Exception:
+        return None, "m4a", []
+
 
 class GeminiAuditor:
     """
     Stage 2: Sends segmented audio clips to Gemini Canvas Proxy (/v1),
-    adhering to the 23 Tamil ASR rules with 3-5 concurrent requests.
+    adhering to the 23 Tamil ASR rules with strictly sequential 1-by-1 requests.
     """
     def __init__(self, proxy_url: str, token: str = config.PROXY_TOKEN, model: str = config.MODEL_NAME, concurrency: int = config.CONCURRENCY):
         raw_url = proxy_url.strip()
@@ -120,19 +204,7 @@ class GeminiAuditor:
                     )
 
                     raw_output = (resp.choices[0].message.content or "").strip()
-
-                    # Extract dominant emotion tag from brackets e.g. [None], [Happy], [Angry]
-                    emotion = "None"
-                    clean_text = raw_output
-                    m = re.search(r"\[(None|Happy|Angry|Sad|Fear|Sarcastic|Disgust|Surprise|Excited)\]\s*$", raw_output, re.IGNORECASE)
-                    if m:
-                        emotion = m.group(1).capitalize()
-                        clean_text = raw_output[:m.start()].strip()
-
-                    # Handle pure music acoustic tag
-                    if clean_text.lower() in ["[music]", "music"] or raw_output.lower() in ["[music]", "[music] [none]"]:
-                        clean_text = "[music]"
-                        emotion = "None"
+                    clean_text, emotion = parse_emotion_and_clean_text(raw_output)
 
                     return {
                         **segment,
@@ -164,21 +236,154 @@ class GeminiAuditor:
                         }
                     await asyncio.sleep(sleep_sec)
 
+    async def audit_clip_bundle(self, clips: List[Dict[str, Any]], max_retries: int = 3) -> List[Dict[str, Any]]:
+        """
+        Transcribes a bundle of up to 10 clips in a single Gemini request.
+        Gemini separates transcripts using '[#cut]'.
+        If delimiter count mismatches, retries once, then falls back to 1-by-1 processing.
+        """
+        N = len(clips)
+        if N == 0:
+            return []
+        if N == 1:
+            res = await self.audit_single_segment(clips[0])
+            return [res]
+
+        with tempfile.TemporaryDirectory() as tmp_d:
+            merged_bytes, fmt, timestamps = concatenate_audio_clips(clips, Path(tmp_d))
+
+        if not merged_bytes or not timestamps:
+            tqdm.write(f"[AUDITOR] Notice: Audio concat failed for bundle of {N} clips. Processing 1-by-1.")
+            results = []
+            for c in clips:
+                results.append(await self.audit_single_segment(c))
+                await asyncio.sleep(0.5)
+            return results
+
+        b64_audio = base64.b64encode(merged_bytes).decode("utf-8")
+        prompt_text = build_bundle_prompt(timestamps, clips)
+
+        user_content = [
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": b64_audio,
+                    "format": fmt
+                }
+            },
+            {
+                "type": "text",
+                "text": prompt_text
+            }
+        ]
+
+        async with self.semaphore:
+            # Attempt 1: Standard bundle request
+            for attempt in range(1, max_retries + 1):
+                try:
+                    extra_body_params = {}
+                    if config.THINKING_BUDGET:
+                        extra_body_params["thinking_budget"] = config.THINKING_BUDGET
+
+                    resp = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_content}
+                        ],
+                        temperature=0.2,
+                        extra_body=extra_body_params if extra_body_params else None
+                    )
+
+                    raw_output = (resp.choices[0].message.content or "").strip()
+                    parts = [p.strip() for p in re.split(r"\[#cut\]", raw_output, flags=re.IGNORECASE) if p.strip()]
+
+                    if len(parts) == N:
+                        results = []
+                        for idx, clip in enumerate(clips):
+                            c_raw = parts[idx]
+                            c_clean, c_emotion = parse_emotion_and_clean_text(c_raw)
+                            results.append({
+                                **clip,
+                                "audited_text": c_raw,
+                                "clean_text": c_clean,
+                                "emotion": c_emotion,
+                                "status": "ok"
+                            })
+                        return results
+                    else:
+                        tqdm.write(f"[AUDITOR] ⚠️ Bundle cut mismatch: expected {N} parts, received {len(parts)} parts. Retrying bundle once...")
+                        break
+                except Exception as exc:
+                    err_str = str(exc)
+                    is_gw = any(c in err_str for c in ["502", "504", "Bad gateway", "overloaded", "origin_bad_gateway", "Connection error"])
+                    sleep_sec = min(20.0, 3.5 * attempt + random.uniform(0.5, 2.0)) if is_gw else 2.0 * attempt
+                    tqdm.write(f"[AUDITOR] Bundle transient notice (Attempt {attempt}/{max_retries}): {exc}. Retrying in {sleep_sec:.1f}s...")
+                    await asyncio.sleep(sleep_sec)
+
+            # Retry with emphatic correction instruction
+            try:
+                retry_content = [
+                    user_content[0],
+                    {
+                        "type": "text",
+                        "text": prompt_text + f"\n\nCRITICAL: In your last response you did not separate with [#cut] correctly. There are exactly {N} segments. Output EXACTLY {N} transcripts separated by '[#cut]'."
+                    }
+                ]
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": retry_content}
+                    ],
+                    temperature=0.1,
+                    extra_body=extra_body_params if extra_body_params else None
+                )
+                raw_output = (resp.choices[0].message.content or "").strip()
+                parts = [p.strip() for p in re.split(r"\[#cut\]", raw_output, flags=re.IGNORECASE) if p.strip()]
+                if len(parts) == N:
+                    results = []
+                    for idx, clip in enumerate(clips):
+                        c_raw = parts[idx]
+                        c_clean, c_emotion = parse_emotion_and_clean_text(c_raw)
+                        results.append({
+                            **clip,
+                            "audited_text": c_raw,
+                            "clean_text": c_clean,
+                            "emotion": c_emotion,
+                            "status": "ok"
+                        })
+                    return results
+            except Exception as e:
+                tqdm.write(f"[AUDITOR] Notice on bundle retry: {e}")
+
+            # Mismatch persisted -> Fallback to processing these N clips individually (one by one)
+            tqdm.write(f"[AUDITOR] ⚠️ Fallback to 1-by-1 sequential processing for {N} clips to guarantee exact alignment.")
+            results = []
+            for c in clips:
+                res = await self.audit_single_segment(c)
+                results.append(res)
+                await asyncio.sleep(1.0)
+            return results
+
     async def audit_batch(
         self,
         segments: List[Dict[str, Any]],
         desc: str = "Transcribing clips",
+        bundle_size: int = config.BUNDLE_SIZE,
+        request_delay: float = config.REQUEST_DELAY_SECONDS,
         cooldown_every: int = config.COOLDOWN_EVERY,
         cooldown_seconds: float = config.COOLDOWN_SECONDS,
-        cooldown_jitter: float = config.COOLDOWN_JITTER,
-        request_jitter: float = config.REQUEST_JITTER,
         cooldown_callback: Optional[Callable[[], None]] = None,
         on_chunk_done: Optional[Callable[[List[Dict[str, Any]]], None]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Audits multiple segments concurrently using the Semaphore with real-time tqdm progress bar.
-        Incorporates rate protection cooldowns: every ~250 requests (randomized), pauses for
-        cooldown_seconds (with random jitter) to keep Gemini web sessions safe from anti-abuse flagging.
+        Audits audio segments strictly sequentially:
+        - Bundles up to 10 clips per Gemini request (separated by [#cut])
+        - Paces requests with 2.0s delay between requests
+        - Real-time tqdm progress bar
+        - Periodically calls cooldown_callback to renew shard lease
+        - Calls on_chunk_done to incrementally buffer results
         """
         if not segments:
             return []
@@ -188,68 +393,59 @@ class GeminiAuditor:
         pbar = tqdm(total=total_segs, desc=f"🎙️  {desc}", unit="clip", dynamic_ncols=True)
         ok_count = 0
         fallback_count = 0
+        req_count = 0
 
         chunk_start = 0
-        chunk_idx = 1
         while chunk_start < total_segs:
-            # Pick a randomized chunk size around cooldown_every (e.g. 210-265) to look organic
-            if cooldown_every > 0:
-                low = max(40, int(cooldown_every * 0.85))
-                high = max(low + 10, int(cooldown_every * 1.15))
-                chunk_len = random.randint(low, high)
-            else:
-                chunk_len = total_segs
+            chunk_end = min(chunk_start + bundle_size, total_segs)
+            current_bundle = segments[chunk_start:chunk_end]
 
-            chunk_end = min(chunk_start + chunk_len, total_segs)
-            current_slice = segments[chunk_start:chunk_end]
+            # Strictly sequential call to Gemini
+            audited_group = await self.audit_clip_bundle(current_bundle)
+            req_count += 1
 
-            async def _run_indexed(global_idx: int, local_idx: int, seg: Dict[str, Any]):
-                nonlocal ok_count, fallback_count
-                # Stagger startup of initial parallel requests to avoid thundering herd on Cloudflare tunnel
-                if local_idx < self.concurrency:
-                    await asyncio.sleep(local_idx * 0.25)
-                elif request_jitter > 0:
-                    # Subtle human-like micro-delay between requests to avoid robotic burst patterns
-                    await asyncio.sleep(random.uniform(0.05, request_jitter))
-
-                res = await self.audit_single_segment(seg)
-                results[global_idx] = res
+            for idx, res in enumerate(audited_group):
+                results[chunk_start + idx] = res
                 if res.get("status") == "ok":
                     ok_count += 1
                 else:
                     fallback_count += 1
-                pbar.set_postfix({"OK": ok_count, "Fallback": fallback_count})
-                pbar.update(1)
-                return res
 
-            tasks = [
-                _run_indexed(chunk_start + i, i, seg)
-                for i, seg in enumerate(current_slice)
-            ]
-            chunk_results = await asyncio.gather(*tasks)
+            pbar.set_postfix({
+                "OK": ok_count,
+                "Fallback": fallback_count,
+                "Bundles": f"{req_count}"
+            })
+            pbar.update(len(current_bundle))
 
             if on_chunk_done:
                 try:
-                    on_chunk_done(chunk_results)
+                    on_chunk_done(audited_group)
                 except Exception as e:
-                    tqdm.write(f"[AUDITOR] Notice in on_chunk_done callback: {e}")
+                    tqdm.write(f"[AUDITOR] Notice in on_chunk_done: {e}")
 
             chunk_start = chunk_end
 
-            # Rate protection cooldown: pause between chunks if more clips remain
-            if chunk_start < total_segs and cooldown_every > 0:
-                pause_sec = random.uniform(cooldown_seconds, cooldown_seconds + cooldown_jitter)
-                tqdm.write(
-                    f"\n[AUDITOR] ☕ Rate protection cooldown: Completed {chunk_end}/{total_segs} clips "
-                    f"({ok_count} Gemini OK). Pausing {pause_sec:.1f}s to keep Gemini session safe..."
-                )
-                if cooldown_callback:
+            # Pacing delay between sequential requests (e.g. 2.0s + slight micro jitter)
+            if chunk_start < total_segs:
+                if request_delay > 0:
+                    delay = request_delay + random.uniform(0.05, 0.25)
+                    await asyncio.sleep(delay)
+
+                # Periodic lease renewal / heartbeat callback
+                if cooldown_callback and (req_count % 10 == 0 or (cooldown_every > 0 and req_count % cooldown_every == 0)):
                     try:
                         cooldown_callback()
                     except Exception:
                         pass
-                await asyncio.sleep(pause_sec)
-                chunk_idx += 1
+
+                # Optional cooldown if enabled
+                if cooldown_every > 0 and (req_count % cooldown_every == 0):
+                    tqdm.write(
+                        f"\n[AUDITOR] ☕ Cooldown pause: Completed {req_count} requests "
+                        f"({chunk_start}/{total_segs} clips, {ok_count} OK). Pausing {cooldown_seconds:.1f}s..."
+                    )
+                    await asyncio.sleep(cooldown_seconds)
 
         pbar.close()
         return results

@@ -34,7 +34,9 @@ from transcribe.telegram_bot import TelegramClusterBot
 
 def print_banner(
     proxy_url: str,
-    concurrency: int,
+    concurrency: int = 1,
+    bundle_size: int = config.BUNDLE_SIZE,
+    request_delay: float = config.REQUEST_DELAY_SECONDS,
     segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
     audited_dataset: str = config.DATASET_REPO,
     buffer_gb: float = config.BUFFER_GB,
@@ -43,16 +45,17 @@ def print_banner(
     cooldown_seconds: float = config.COOLDOWN_SECONDS
 ):
     print("\n" + "="*70)
-    print("🎙️  TAMIL ASR DISTRIBUTED TRANSCRIPTION ENGINE (TWO-TIER ARCHITECTURE)")
+    print("🎙️  TAMIL ASR SEQUENTIAL TRANSCRIPTION ENGINE (10-CLIP BUNDLE PIPELINE)")
     print("="*70)
     print(f"📌 Worker ID:          {config.WORKER_ID}")
     print(f"📦 Tier 1 Tracking:    {config.TRACKING_BUCKET} (< 5MB, zero audio)")
     print(f"✂️  Segmented Dataset:  {segmented_dataset} (Input Shards)")
     print(f"🎯 Audited Dataset:    {audited_dataset} (Final Corpus)")
-    print(f"📦 Target Shard Size:  {buffer_gb:.1f} GB per Parquet shard (Single commit per shard)")
-    print(f"⚡ Concurrency:        {concurrency} parallel requests (Sweet spot: 3 to 5)")
-    cooldown_info = f"Every ~{cooldown_every} requests (Pause: {cooldown_seconds:.0f}s)" if cooldown_every > 0 else "Disabled"
-    print(f"☕ Cooldown Guard:     {cooldown_info}")
+    print(f"⚡ Mode:               Strictly Sequential (1 request at a time)")
+    print(f"📦 Bundle Size:        {bundle_size} clips merged per request via [#cut]")
+    print(f"⏱️  Request Pacing:     {request_delay:.1f}s delay between requests")
+    if cooldown_every > 0:
+        print(f"☕ Cooldown Guard:     Every ~{cooldown_every} requests (Pause: {cooldown_seconds:.0f}s)")
     print(f"🤖 Gemini Model:       {config.MODEL_NAME}")
     print(f"🔗 Gemini Proxy:       {proxy_url}")
     print(f"🤖 Telegram Bot:       {'ONLINE' if bot_active else 'OFFLINE'}")
@@ -62,6 +65,8 @@ def print_banner(
 async def run_transcription_pipeline(
     proxy_url: str,
     concurrency: int = config.CONCURRENCY,
+    bundle_size: int = config.BUNDLE_SIZE,
+    request_delay: float = config.REQUEST_DELAY_SECONDS,
     batch_size: int = config.BATCH_LEASE_SIZE,
     segmented_dataset: str = config.SEGMENTED_DATASET_REPO,
     audited_dataset: str = config.DATASET_REPO,
@@ -74,6 +79,8 @@ async def run_transcription_pipeline(
     print_banner(
         proxy_url=proxy_url,
         concurrency=concurrency,
+        bundle_size=bundle_size,
+        request_delay=request_delay,
         segmented_dataset=segmented_dataset,
         audited_dataset=audited_dataset,
         buffer_gb=buffer_gb,
@@ -259,11 +266,13 @@ async def run_transcription_pipeline(
                         "draft_text": ""
                     })
 
-                print(f"[STAGE 2] Loaded {len(clips_to_audit)} clips from {shard_file}. Transcribing with concurrency {concurrency}...")
+                print(f"[STAGE 2] Loaded {len(clips_to_audit)} clips from {shard_file}. Transcribing sequentially in bundles of {bundle_size} (pacing: {request_delay:.1f}s)...")
                 t0 = time.time()
                 audited = await auditor.audit_batch(
                     clips_to_audit,
                     desc=f"Shard {Path(shard_file).name}",
+                    bundle_size=bundle_size,
+                    request_delay=request_delay,
                     cooldown_every=cooldown_every,
                     cooldown_seconds=cooldown_seconds,
                     cooldown_callback=lambda: (
@@ -276,20 +285,18 @@ async def run_transcription_pipeline(
                 print(f"[STAGE 2] Audited {len(audited)} clips in {elapsed:.1f}s ({success_count} Gemini OK)!")
 
                 syncer.sync_audited_segments(audited, shard_id=shard_file)
-                if syncer.buffered_bytes >= syncer.target_buffer_bytes or len(syncer.buffered_rows) >= syncer.shard_threshold:
-                    syncer.flush_shard()
+                # 1-to-1 Shard Commit: Flush and push directly to King758/tamil-asr-corpus
+                uploaded_shard = syncer.flush_shard()
+                if uploaded_shard:
+                    # ONLY record shard completed after HF Hub upload is confirmed!
+                    manifest = coordinator.load_manifest(force=True)
+                    manifest.setdefault("completed_segmented_shards", [])
+                    if shard_file not in manifest["completed_segmented_shards"]:
+                        manifest["completed_segmented_shards"].append(shard_file)
+                    coordinator.save_manifest(manifest)
+                    print(f"[COORDINATOR] ✅ Successfully transcribed, pushed {uploaded_shard} to Hub, and recorded {shard_file}!")
                 else:
-                    cur_mb = syncer.buffered_bytes / (1024 * 1024)
-                    target_mb = syncer.target_buffer_bytes / (1024 * 1024)
-                    print(f"[TRANSCRIBER] Buffer at {cur_mb:.1f} MB / {target_mb:.0f} MB ({len(syncer.buffered_rows)} clips). Continuing to next shard before uploading...")
-
-                # Mark shard completed in manifest
-                manifest = coordinator.load_manifest(force=True)
-                manifest.setdefault("completed_segmented_shards", [])
-                if shard_file not in manifest["completed_segmented_shards"]:
-                    manifest["completed_segmented_shards"].append(shard_file)
-                coordinator.save_manifest(manifest)
-                print(f"[COORDINATOR] Successfully transcribed and recorded shard {shard_file}!")
+                    print(f"[COORDINATOR] ⚠️ Notice: Shard upload did not complete. Leaving {shard_file} unrecorded so it can be safely re-run.")
 
             except Exception as e:
                 print(f"[COORDINATOR] Error processing shard {shard_file}: {e}")
@@ -348,6 +355,8 @@ async def run_transcription_pipeline(
             audited_segments = await auditor.audit_batch(
                 segments,
                 desc=f"[{vid_id}] {vid_title[:25]}",
+                bundle_size=bundle_size,
+                request_delay=request_delay,
                 cooldown_every=cooldown_every,
                 cooldown_seconds=cooldown_seconds,
                 cooldown_callback=lambda: coordinator.update_heartbeat(status="processing")
@@ -385,12 +394,14 @@ async def run_transcription_pipeline(
         telegram_bot.stop()
 
 def main():
-    parser = argparse.ArgumentParser(description="Distributed Tamil ASR Transcriber with Segmented Dataset Pulling")
+    parser = argparse.ArgumentParser(description="Distributed Tamil ASR Sequential Transcriber with 10-Clip Bundling")
     parser.add_argument("--url", "--proxy-url", "--proxy_url", dest="proxy_url", type=str, default="", help="Gemini Canvas Proxy /v1 endpoint (e.g. https://...trycloudflare.com/v1)")
-    parser.add_argument("--concurrency", type=int, default=config.CONCURRENCY, help="Parallel requests to Gemini (default: 4, recommended: 3-5)")
-    parser.add_argument("--cooldown-every", dest="cooldown_every", type=int, default=config.COOLDOWN_EVERY, help=f"Clips between rate protection cooldowns (default: {config.COOLDOWN_EVERY}, 0 to disable)")
+    parser.add_argument("--concurrency", type=int, default=config.CONCURRENCY, help=f"Sequential requests to Gemini (default: {config.CONCURRENCY})")
+    parser.add_argument("--bundle-size", dest="bundle_size", type=int, default=config.BUNDLE_SIZE, help=f"Clips merged per Gemini request (default: {config.BUNDLE_SIZE})")
+    parser.add_argument("--request-delay", "--delay", dest="request_delay", type=float, default=config.REQUEST_DELAY_SECONDS, help=f"Seconds delay between sequential requests (default: {config.REQUEST_DELAY_SECONDS}s)")
+    parser.add_argument("--cooldown-every", dest="cooldown_every", type=int, default=config.COOLDOWN_EVERY, help=f"Requests between cooldown pauses (default: {config.COOLDOWN_EVERY}, 0 to disable)")
     parser.add_argument("--cooldown-sec", "--cooldown-seconds", dest="cooldown_seconds", type=float, default=config.COOLDOWN_SECONDS, help=f"Cooldown pause duration in seconds (default: {config.COOLDOWN_SECONDS}s)")
-    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch (default: 3)")
+    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=config.BATCH_LEASE_SIZE, help="Number of videos to lease per batch in Mode 2 (default: 3)")
     parser.add_argument("--segmented-dataset", dest="segmented_dataset", type=str, default=config.SEGMENTED_DATASET_REPO, help=f"Source segmented HF dataset (default: {config.SEGMENTED_DATASET_REPO})")
     parser.add_argument("--dataset-repo", "--audited-dataset", dest="audited_dataset", type=str, default=config.AUDITED_DATASET_REPO, help=f"Target audited HF dataset (default: {config.AUDITED_DATASET_REPO})")
     parser.add_argument("--buffer-gb", "--buffer_gb", "--shard-gb", dest="buffer_gb", type=float, default=config.BUFFER_GB, help=f"Target Parquet shard size in GB (default: {config.BUFFER_GB} GB)")
@@ -478,6 +489,8 @@ def main():
     asyncio.run(run_transcription_pipeline(
         proxy_url=proxy_url,
         concurrency=args.concurrency,
+        bundle_size=args.bundle_size,
+        request_delay=args.request_delay,
         batch_size=args.batch_size,
         segmented_dataset=args.segmented_dataset,
         audited_dataset=args.audited_dataset,

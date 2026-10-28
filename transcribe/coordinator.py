@@ -957,6 +957,11 @@ class TranscriptionCoordinator:
                         l_data = json.load(f)
                     if l_data.get("expires_at", 0) > now:
                         active_leased_shards.add(l_data.get("shard_file"))
+                    else:
+                        try:
+                            self.api.batch_bucket_files(bucket_id=self.tracking_bucket, delete=[lf])
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 finally:

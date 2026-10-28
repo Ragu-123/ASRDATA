@@ -110,15 +110,17 @@ DEFAULT_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "")
 PROXY_TOKEN = resolve_secret("PROXY_TOKEN", "51dfb957-7347-449b-b153-df797a72c9d5")
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
-# Parallel Request Concurrency (Sweet spot: 3 to 5 parallel requests)
-CONCURRENCY = int(os.getenv("CONCURRENCY", "4"))
-THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2048"))  # 2k reasoning tokens (fast & avoids Cloudflare 100s timeout)
+# Sequential Gemini Request Configuration
+CONCURRENCY = int(os.getenv("CONCURRENCY", "1"))                      # Strictly 1 request at a time for Gemini Canvas proxy
+BUNDLE_SIZE = int(os.getenv("BUNDLE_SIZE", "10"))                     # Merge 10 clips per Gemini prompt
+REQUEST_DELAY_SECONDS = float(os.getenv("REQUEST_DELAY_SECONDS", "2.0")) # 2-second delay between sequential requests
+THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2048"))           # 2k reasoning tokens
 
 # Anti-Abuse Rate Protection & Dynamic Cooldown
-COOLDOWN_EVERY = int(os.getenv("COOLDOWN_EVERY", "250"))          # Number of requests before cooldown (0 to disable)
-COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "10.0"))    # Base cooldown duration in seconds
-COOLDOWN_JITTER = float(os.getenv("COOLDOWN_JITTER", "5.0"))       # Random jitter added to pause (seconds)
-REQUEST_JITTER = float(os.getenv("REQUEST_JITTER", "0.15"))         # Micro-jitter between requests to prevent robotic lockstep
+COOLDOWN_EVERY = int(os.getenv("COOLDOWN_EVERY", "0"))                # Optional cooldown every N requests (0 to disable)
+COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "10.0"))       # Base cooldown duration in seconds
+COOLDOWN_JITTER = float(os.getenv("COOLDOWN_JITTER", "5.0"))          # Random jitter added to pause (seconds)
+REQUEST_JITTER = float(os.getenv("REQUEST_JITTER", "0.20"))            # Micro-jitter between requests to prevent robotic lockstep
 
 # Distributed Lease Controls
 BATCH_LEASE_SIZE = int(os.getenv("BATCH_LEASE_SIZE", "3"))  # 3 videos per lease
